@@ -11,8 +11,7 @@ import opendbc.safety.tests.common as common
 
 TOYOTA_COMMON_TX_MSGS = [[0x2E4, 0], [0x191, 0], [0x412, 0], [0x343, 0], [0x1D2, 0]]  # LKAS + LTA + ACC & PCM cancel cmds
 TOYOTA_SECOC_TX_MSGS = [[0x131, 0], [0x183, 0]] + TOYOTA_COMMON_TX_MSGS
-TOYOTA_COMMON_LONG_TX_MSGS = [[0x283, 0], [0x2E6, 0], [0x2E7, 0], [0x33E, 0], [0x344, 0], [0x365, 0], [0x366, 0], [0x4CB, 0],  # DSU bus 0
-                              [0x128, 1], [0x141, 1], [0x160, 1], [0x161, 1], [0x470, 1],  # DSU bus 1
+TOYOTA_COMMON_LONG_TX_MSGS = [[0x283, 0],  # PRE_COLLISION, zero payload only
                               [0x411, 0],  # PCS_HUD
                               [0x750, 0]]  # radar diagnostic address
 
@@ -76,6 +75,15 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
   def _pcm_status_msg(self, enable):
     values = {"CRUISE_ACTIVE": enable}
     return self.packer.make_can_msg_safety("PCM_CRUISE", 0, values)
+
+  def test_pcs_and_dsu_messages_blocked(self):
+    # LionDriver TSR-705: frames used by the stock PCS function or sent only by a DSU are never forwarded from the SoC
+    blocked = [(0x344, 0, 8), (0x2E6, 0, 8), (0x2E7, 0, 8), (0x33E, 0, 7), (0x365, 0, 7), (0x366, 0, 7), (0x4CB, 0, 8),
+               (0x128, 1, 6), (0x141, 1, 4), (0x160, 1, 8), (0x161, 1, 7), (0x470, 1, 4)]
+    for controls_allowed in (True, False):
+      self.safety.set_controls_allowed(controls_allowed)
+      for addr, bus, length in blocked:
+        self.assertFalse(self._tx(libsafety_py.make_CANPacket(addr, bus, b"\x00" * length)), hex(addr))
 
   def setUp(self):
     super().setUp()

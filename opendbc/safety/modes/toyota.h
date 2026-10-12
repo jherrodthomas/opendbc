@@ -18,12 +18,10 @@
 
 #define TOYOTA_COMMON_LONG_TX_MSGS \
   TOYOTA_COMMON_TX_MSGS \
-  /* DSU bus 0 */ \
-  {0x283, 0, 7, .check_relay = false}, {0x2E6, 0, 8, .check_relay = false}, {0x2E7, 0, 8, .check_relay = false}, {0x33E, 0, 7, .check_relay = false}, \
-  {0x344, 0, 8, .check_relay = false}, {0x365, 0, 7, .check_relay = false}, {0x366, 0, 7, .check_relay = false}, {0x4CB, 0, 8, .check_relay = false}, \
-  /* DSU bus 1 */ \
-  {0x128, 1, 6, .check_relay = false}, {0x141, 1, 4, .check_relay = false}, {0x160, 1, 8, .check_relay = false}, {0x161, 1, 7, .check_relay = false}, \
-  {0x470, 1, 4, .check_relay = false}, \
+  /* PRE_COLLISION, zero payload only (see toyota_tx_hook). LionDriver TSR-705: PRE_COLLISION_2 (0x344), */ \
+  /* the DSU bus-0 messages 0x2E6, 0x2E7, 0x33E, 0x365, 0x366, 0x4CB and the DSU bus-1 set are not allowed; */ \
+  /* no openpilot code sends them, and 0x344 carries PCS brake triggers */ \
+  {0x283, 0, 7, .check_relay = false}, \
   /* PCS_HUD */                        \
   {0x411, 0, 8, .check_relay = false}, \
   /* radar diagnostic address */       \
