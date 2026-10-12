@@ -77,6 +77,32 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     values = {"CRUISE_ACTIVE": enable}
     return self.packer.make_can_msg_safety("PCM_CRUISE", 0, values)
 
+  # LionDriver TSR-401: each RX check times out after this many nominal periods, without
+  # the upstream 1 s floor
+  RX_TIMEOUT_PERIODS = 5
+
+  def _rx_check_msgs(self):
+    # one message per RX check of the safety mode, with its nominal frequency in Hz
+    return [(self._speed_msg(0), 83), (self._torque_meas_msg(0), 50),
+            (self._pcm_status_msg(False), 33), (self._user_brake_msg(False), 40)]
+
+  def test_rx_timeout_periods(self):
+    msgs = self._rx_check_msgs()
+    for i, (_, freq) in enumerate(msgs):
+      timeout = int(1e6 / freq) * self.RX_TIMEOUT_PERIODS
+      with self.subTest(msg=i, timeout_us=timeout):
+        self._reset_safety_hooks()
+        # all checks pass; message i then stops while the others keep arriving
+        for t, valid in ((0, True), (timeout, True), (timeout + 1, False)):
+          self.safety.set_timer(t)
+          for j, (msg, _) in enumerate(msgs):
+            if t == 0 or j != i:
+              self.assertTrue(self._rx(msg))
+          self.safety.set_controls_allowed(True)
+          self.safety.safety_tick()
+          self.assertEqual(self.safety.safety_config_valid(), valid)
+          self.assertEqual(self.safety.get_controls_allowed(), valid)
+
   def test_diagnostics(self, stock_longitudinal: bool = False, ecu_disabled: bool = True):
     for should_tx, msg in ((False, b"\x6D\x02\x3E\x00\x00\x00\x00\x00"),  # fwdCamera tester present
                            (False, b"\x0F\x03\xAA\xAA\x00\x00\x00\x00"),  # non-tester present
@@ -341,6 +367,10 @@ class TestToyotaSecOcSafetyBase(TestToyotaSafetyBase):
   def _user_gas_msg(self, gas):
     values = {"GAS_PEDAL_USER": gas}
     return self.packer.make_can_msg_safety("GAS_PEDAL", 0, values)
+
+  def _rx_check_msgs(self):
+    return [(self._speed_msg(0), 83), (self._torque_meas_msg(0), 50), (self._pcm_status_msg(False), 32),
+            (self._user_gas_msg(0), 42), (self._user_brake_msg(False), 50)]
 
   # This platform sends both STEERING_LTA (same as other Toyota) and STEERING_LTA_2 (SecOC signed)
   # STEERING_LTA is checked for no-actuation by the base class, STEERING_LTA_2 is checked for no-actuation below

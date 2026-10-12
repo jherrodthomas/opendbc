@@ -317,7 +317,8 @@ void gen_crc_lookup_table_16(uint16_t poly, uint16_t crc_lut[]) {
   }
 }
 
-// 1Hz safety function called by main. Now just a check for lagging safety messages
+// Periodic safety function called by main (1 Hz upstream; 100 Hz on the LionDriver panda).
+// Checks for lagging safety messages
 void safety_tick(void) {
   const uint8_t MAX_MISSED_MSGS = 10U;
   bool rx_checks_invalid = false;
@@ -329,7 +330,14 @@ void safety_tick(void) {
     // 2s of lag is worse case, since the function is called at 1Hz
     uint32_t frequency = current_safety_config.rx_checks[i].msg[current_safety_config.rx_checks[i].status.index].frequency;
     uint32_t timestep = 1e6 / frequency;
-    bool lagging = elapsed_time > SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
+    uint32_t timeout;
+    if (current_safety_config.rx_timeout_periods > 0U) {
+      // LionDriver TSR-401: absence longer than rx_timeout_periods nominal periods
+      timeout = timestep * current_safety_config.rx_timeout_periods;
+    } else {
+      timeout = SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
+    }
+    bool lagging = elapsed_time > timeout;
     current_safety_config.rx_checks[i].status.lagging = lagging;
 
     // enforce minimum frequency for safety-relevant messages

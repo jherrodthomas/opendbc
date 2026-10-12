@@ -56,6 +56,8 @@
   {.msg = {{0x116, 0, 8, 42U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{0x101, 0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
+#define TOYOTA_RX_TIMEOUT_PERIODS 5U
+
 static bool toyota_secoc = false;
 static bool toyota_alt_brake = false;
 static bool toyota_stock_longitudinal = false;
@@ -424,6 +426,10 @@ static safety_config toyota_init(uint16_t param) {
       SET_RX_CHECKS(toyota_lka_alt_brake_rx_checks, ret);
     }
   }
+
+  // LionDriver TSR-401: a gating or limiting message times out after 5 nominal periods
+  // (the safety tick runs at 100 Hz on the LionDriver panda, so detection is <= 0.2 s)
+  ret.rx_timeout_periods = TOYOTA_RX_TIMEOUT_PERIODS;
 
   return ret;
 }
