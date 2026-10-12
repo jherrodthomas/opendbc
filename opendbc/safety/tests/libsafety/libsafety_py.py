@@ -29,6 +29,9 @@ def _build_libsafety(release: bool = False) -> str:
   cflags += ldflags
   if not release:
     cflags += ['-DALLOW_DEBUG']
+  # LionDriver reference build (panda LIONDRIVER_REFERENCE=1); the test suite is run once in each variant
+  if os.environ.get("LIONDRIVER_REFERENCE") == "1":
+    cflags += ['-DLIONDRIVER_REFERENCE']
 
   fd, safety_os = tempfile.mkstemp(suffix='.os', dir=libsafety_dir)
   os.close(fd)

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import numpy as np
 import random
 import unittest
@@ -11,9 +12,13 @@ import opendbc.safety.tests.common as common
 
 TOYOTA_COMMON_TX_MSGS = [[0x2E4, 0], [0x191, 0], [0x412, 0], [0x343, 0], [0x1D2, 0]]  # LKAS + LTA + ACC & PCM cancel cmds
 TOYOTA_SECOC_TX_MSGS = [[0x131, 0], [0x183, 0]] + TOYOTA_COMMON_TX_MSGS
+# LionDriver reference build: libsafety compiled with LIONDRIVER_REFERENCE (see libsafety_py)
+LIONDRIVER_REFERENCE = os.environ.get("LIONDRIVER_REFERENCE") == "1"
+
 TOYOTA_COMMON_LONG_TX_MSGS = [[0x283, 0],  # PRE_COLLISION, zero payload only
-                              [0x411, 0],  # PCS_HUD
                               [0x750, 0]]  # radar diagnostic address
+if not LIONDRIVER_REFERENCE:
+  TOYOTA_COMMON_LONG_TX_MSGS.append([0x411, 0])  # PCS_HUD, not in the reference build (TSR-705 D-1)
 
 
 class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyTest):
@@ -75,6 +80,13 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
   def _pcm_status_msg(self, enable):
     values = {"CRUISE_ACTIVE": enable}
     return self.packer.make_can_msg_safety("PCM_CRUISE", 0, values)
+
+  def test_pcs_hud(self):
+    # LionDriver TSR-705 decision D-1: PCS_HUD is not accepted in the reference build
+    expected = [0x411, 0] in self.TX_MSGS
+    if LIONDRIVER_REFERENCE:
+      self.assertFalse(expected)
+    self.assertEqual(expected, self._tx(libsafety_py.make_CANPacket(0x411, 0, b"\x00" * 8)))
 
   def test_pcs_and_dsu_messages_blocked(self):
     # LionDriver TSR-705: frames used by the stock PCS function or sent only by a DSU are never forwarded from the SoC

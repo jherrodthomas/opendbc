@@ -16,14 +16,23 @@
   {0x2E4, 0, 8, .check_relay = true}, {0x131, 0, 8, .check_relay = true}, \
   {0x343, 0, 8, .check_relay = false},  /* ACC cancel cmd */ \
 
+// LionDriver TSR-705, decision D-1: the reference build (LIONDRIVER_REFERENCE, 2020 Corolla LE TSS2 with camera ACC)
+// never sends PCS_HUD, so it does not accept it. Other builds keep it for radar-ACC cars with alpha longitudinal,
+// which disable the radar and send their own PCS_HUD
+#ifdef LIONDRIVER_REFERENCE
+#define TOYOTA_PCS_HUD_TX_MSG
+#else
+#define TOYOTA_PCS_HUD_TX_MSG {0x411, 0, 8, .check_relay = false},
+#endif
+
 #define TOYOTA_COMMON_LONG_TX_MSGS \
   TOYOTA_COMMON_TX_MSGS \
   /* PRE_COLLISION, zero payload only (see toyota_tx_hook). LionDriver TSR-705: PRE_COLLISION_2 (0x344), */ \
   /* the DSU bus-0 messages 0x2E6, 0x2E7, 0x33E, 0x365, 0x366, 0x4CB and the DSU bus-1 set are not allowed; */ \
   /* no openpilot code sends them, and 0x344 carries PCS brake triggers */ \
   {0x283, 0, 7, .check_relay = false}, \
-  /* PCS_HUD */                        \
-  {0x411, 0, 8, .check_relay = false}, \
+  /* PCS_HUD, not in the LionDriver reference build */ \
+  TOYOTA_PCS_HUD_TX_MSG \
   /* radar diagnostic address */       \
   {0x750, 0, 8, .check_relay = false}, \
   /* ACC */                            \
