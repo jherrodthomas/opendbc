@@ -77,9 +77,15 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     values = {"CRUISE_ACTIVE": enable}
     return self.packer.make_can_msg_safety("PCM_CRUISE", 0, values)
 
+  def setUp(self):
+    super().setUp()
+    # LionDriver TSR-306: controls are only granted when every RX check is valid, as on a live bus
+    self._rx_all_checked_msgs()
+
   def _rx_all_checked_msgs(self):
-    for msg in (self._speed_msg(0), self._user_brake_msg(False), self._user_gas_msg(False),
-                self._pcm_status_msg(False), self._torque_meas_msg(0)):
+    # PCM_CRUISE before the gas message: on non-SecOC cars both are PCM_CRUISE, and the gas message leaves gas released
+    for msg in (self._speed_msg(0), self._user_brake_msg(False), self._pcm_status_msg(False),
+                self._user_gas_msg(False), self._torque_meas_msg(0)):
       self.assertTrue(self._rx(msg))
 
   def test_rx_timeout_5_periods(self):
@@ -99,6 +105,27 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
         self.safety.safety_tick()
         self.assertEqual(valid, self.safety.safety_config_valid())
         self.assertEqual(valid, self.safety.get_controls_allowed())
+
+  def test_no_engagement_with_invalid_rx_checks(self):
+    # LionDriver TSR-306: a PCM rising edge does not grant controls while an RX check is failed,
+    # including a timeout that safety_tick has not evaluated yet
+    threshold_us = int(1e6 / 83) * 5
+    for elapsed_us, engages in ((threshold_us, True), (threshold_us + 1, False)):
+      with self.subTest(elapsed_us=elapsed_us):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self._rx_all_checked_msgs()
+        self.safety.set_timer(elapsed_us)
+        self._rx(self._pcm_status_msg(False))
+        self._rx(self._pcm_status_msg(True))
+        self.assertEqual(engages, self.safety.get_controls_allowed())
+
+    # a message never received also blocks engagement
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._pcm_status_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
 
   def _rx_check_msgs(self):
     # one message per RX check of the safety mode, with its nominal frequency in Hz
