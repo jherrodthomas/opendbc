@@ -72,6 +72,7 @@ bool acc_main_on = false;  // referred to as "ACC off" in ISO 15622:2018
 int cruise_button_prev = 0;
 bool safety_rx_checks_invalid = false;
 bool safety_eps_fault = false;
+bool safety_tx_rate_exceeded = false;
 
 // for safety modes with torque steering control
 int desired_torque_last = 0;       // last desired steer torque
@@ -239,6 +240,46 @@ static bool tx_msg_safety_check(const CANPacket_t *msg, const CanMsg msg_list[],
   return whitelisted;
 }
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver TSR-518 (DN-01): returns false if the frame exceeds the TX rate budget of its ID. Reference build only
+// (DN-01 D-5): no upstream mode configures TX rate rows yet
+#define TX_RATE_WINDOW_US 250000U
+#define TX_RATE_REVOKE_REJECTED 3U
+static bool tx_rate_check(const CANPacket_t *msg) {
+  bool allowed = true;
+  for (int i = 0; i < current_safety_config.tx_rate_checks_len; i++) {
+    TxRateCheck *check = &current_safety_config.tx_rate_checks[i];
+    if (msg_matches(msg, check->addr, (uint32_t)check->bus)) {
+      uint32_t ts = microsecond_timer_get();
+      uint32_t elapsed = safety_get_ts_elapsed(ts, check->status.ts_last);
+      if (elapsed >= (TX_RATE_WINDOW_US / 2U)) {
+        // after a whole window without frames the previous half-window is empty too
+        check->status.msgs_prev = (elapsed >= TX_RATE_WINDOW_US) ? 0U : check->status.msgs;
+        check->status.msgs = 0U;
+        check->status.rejected = 0U;
+        check->status.ts_last = ts;
+      }
+      // ceil(frequency * 0.25 s * 1.2) + 1 + burst
+      uint32_t budget = ((((uint32_t)check->frequency * 3U) + 9U) / 10U) + 1U + (uint32_t)check->burst;
+      if (((uint32_t)check->status.msgs + (uint32_t)check->status.msgs_prev) >= budget) {
+        allowed = false;
+        if (check->status.rejected < 0xFFFFU) {
+          check->status.rejected += 1U;
+        }
+        if (controls_allowed && (check->status.rejected >= TX_RATE_REVOKE_REJECTED)) {
+          controls_allowed = false;
+          safety_tx_rate_exceeded = true;
+        }
+      } else {
+        check->status.msgs += 1U;
+      }
+      break;
+    }
+  }
+  return allowed;
+}
+#endif
+
 bool safety_tx_hook(CANPacket_t *msg) {
   bool whitelisted = tx_msg_safety_check(msg, current_safety_config.tx_msgs, current_safety_config.tx_msgs_len);
   if ((current_safety_mode == SAFETY_ALLOUTPUT) || (current_safety_mode == SAFETY_ELM327)) {
@@ -246,9 +287,16 @@ bool safety_tx_hook(CANPacket_t *msg) {
   }
 
   bool safety_allowed = false;
+#ifdef LIONDRIVER_REFERENCE
+  // LionDriver TSR-518: the rate check runs first, so a frame over budget does not update the mode's limit state
+  if (whitelisted && tx_rate_check(msg)) {
+    safety_allowed = current_hooks->tx(msg);
+  }
+#else
   if (whitelisted) {
     safety_allowed = current_hooks->tx(msg);
   }
+#endif
 
   return !relay_malfunction && whitelisted && safety_allowed;
 }
@@ -487,6 +535,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
   safety_eps_fault = false;
+  safety_tx_rate_exceeded = false;
 
   current_safety_config = (safety_config){0};
 
@@ -506,6 +555,11 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
     for (int j = 0; j < current_safety_config.rx_checks_len; j++) {
       current_safety_config.rx_checks[j].status = (RxStatus){0};
     }
+#ifdef LIONDRIVER_REFERENCE
+    for (int j = 0; j < current_safety_config.tx_rate_checks_len; j++) {
+      current_safety_config.tx_rate_checks[j].status = (TxRateStatus){0};
+    }
+#endif
   }
   return set_status;
 }
