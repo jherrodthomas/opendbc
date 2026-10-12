@@ -112,8 +112,44 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     # LionDriver TSR-110, TSR-401: RX checks the reference build adds on non-SecOC cars with BRAKE_MODULE, with their nominal frequency in Hz
     if not LIONDRIVER_REFERENCE or self.SAFETY_PARAM & (ToyotaSafetyFlags.SECOC | ToyotaSafetyFlags.ALT_BRAKE):
       return []
-    return [(self.packer.make_can_msg_safety("EPS_STATUS", 0, {}), 25),
+    return [(self._eps_status_msg(5), 25),
             (self.packer.make_can_msg_safety("PCM_CRUISE_2", 0, {}), 33)]
+
+  def _eps_status_msg(self, lka_state: int):
+    return self.packer.make_can_msg_safety("EPS_STATUS", 0, {"LKA_STATE": lka_state})
+
+  def test_eps_fault_blocks_lka(self):
+    # LionDriver TSR-110: in the reference build, while EPS_STATUS.LKA_STATE is in the host's steering fault set,
+    # STEERING_LKA frames with torque or a steer request are refused; zero frames still pass
+    lka_reference = LIONDRIVER_REFERENCE and not self.SAFETY_PARAM & (ToyotaSafetyFlags.SECOC | ToyotaSafetyFlags.ALT_BRAKE |
+                                                                        ToyotaSafetyFlags.LTA)
+    if not lka_reference:
+      raise unittest.SkipTest("reference build, LKA torque control only")
+    fault_states = {0, 3, 9, 11, 17, 21, 25}
+    for lka_state in range(128):
+      with self.subTest(lka_state=lka_state):
+        self._reset_safety_hooks()
+        self.assertTrue(self._rx(self._eps_status_msg(lka_state)))
+        self.safety.set_controls_allowed(True)
+        fault = lka_state in fault_states
+        self.assertTrue(self._tx(self._torque_cmd_msg(0, steer_req=0)))
+        self.assertEqual(not fault, self._tx(self._torque_cmd_msg(0, steer_req=1)))
+        self.assertEqual(not fault, self._tx(self._torque_cmd_msg(10, steer_req=1)))
+
+    # the fault clears with the next frame that reports a non-fault state
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._rx(self._eps_status_msg(25)))
+    self.assertFalse(self._tx(self._torque_cmd_msg(10, steer_req=1)))
+    self.assertTrue(self._rx(self._eps_status_msg(5)))
+    self.assertTrue(self._tx(self._torque_cmd_msg(10, steer_req=1)))
+
+    # a refused frame does not update the torque rate limit state: after the fault, the ramp starts from the last
+    # frame actually accepted
+    self.assertTrue(self._rx(self._eps_status_msg(9)))
+    self.assertFalse(self._tx(self._torque_cmd_msg(25, steer_req=1)))
+    self.assertTrue(self._rx(self._eps_status_msg(5)))
+    self.assertFalse(self._tx(self._torque_cmd_msg(40, steer_req=1)))  # 25 + 15 would pass, 10 + 30 does not
 
   def test_reference_rx_checks(self):
     # the reference build supervises EPS_STATUS and PCM_CRUISE_2: a bad checksum is rejected, and without the message
