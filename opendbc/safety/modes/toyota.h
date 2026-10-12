@@ -47,8 +47,24 @@
   {.msg = {{ 0xaa, 0, 8, 83U, .ignore_checksum = true, .ignore_counter = true}, { 0 }, { 0 }}},      \
   {.msg = {{0x260, 0, 8, 50U, .ignore_counter = true, .ignore_quality_flag=!(lta)}, { 0 }, { 0 }}},  \
 
+// LionDriver TSR-110, TSR-401: the reference build also supervises EPS_STATUS (0x262) and PCM_CRUISE_2 (0x1D3) for
+// presence, checksum and timeout on the reference car's RX set (non-SecOC, BRAKE_MODULE brake; reference_lock fixes the
+// parameter), as inputs of the planned EPS-fault (TSR-110) and brake/cruise cross-checks (TSR-405).
+// The nominal rates are the minimum rates openpilot's CAN parser required for these messages (25 Hz, 33 Hz); they are
+// to be confirmed against measured rates on the reference vehicle (WP-S-05 OI-7). SPEED (0xB4) is not added: no
+// nominal rate is known yet, and a rate set too high would block engagement permanently.
+#ifdef LIONDRIVER_REFERENCE
+#define TOYOTA_REFERENCE_RX_CHECKS                                                                                                          \
+  {.msg = {{0x262, 0, 8, 25U, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},                            \
+  {.msg = {{0x1D3, 0, 8, 33U, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},                            \
+
+#else
+#define TOYOTA_REFERENCE_RX_CHECKS
+#endif
+
 #define TOYOTA_RX_CHECKS(lta)                                                                                                               \
   TOYOTA_COMMON_RX_CHECKS(lta)                                                                                                              \
+  TOYOTA_REFERENCE_RX_CHECKS                                                                                                                \
   {.msg = {{0x1D2, 0, 8, 33U, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},                            \
   {.msg = {{0x226, 0, 8, 40U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true},  { 0 }, { 0 }}},  \
 
