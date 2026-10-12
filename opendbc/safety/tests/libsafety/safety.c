@@ -58,6 +58,18 @@ bool get_safety_eps_fault(void){
   return safety_eps_fault;
 }
 
+bool get_safety_tx_rate_exceeded(void){
+  return safety_tx_rate_exceeded;
+}
+
+// LionDriver TSR-518: test helper (libsafety only). Clears the TX rate windows, so that tests that send many frames at
+// one timer value check content limits only; the rate tests do not call it
+void reset_tx_rate_state(void){
+  for (int j = 0; j < current_safety_config.tx_rate_checks_len; j++) {
+    current_safety_config.tx_rate_checks[j].status = (TxRateStatus){0};
+  }
+}
+
 bool get_gas_pressed_prev(void){
   return gas_pressed_prev;
 }

@@ -542,6 +542,23 @@ static safety_config toyota_init(uint16_t param) {
   // LionDriver TSR-401: an RX check lags after 5 missed periods (0x1D2 at 33 Hz: 0.15 s, plus one 10 ms safety task period)
   ret.rx_timeout_periods = TOYOTA_RX_TIMEOUT_PERIODS;
 
+#ifdef LIONDRIVER_REFERENCE
+  // LionDriver TSR-518 (DN-01): TX rate budgets for the non-SecOC configurations (the reference car). Nominal rates from
+  // opendbc/car/toyota/carcontroller.py; burst covers on-change frames and host catch-up after a short stall
+  if (!toyota_secoc) {
+    static TxRateCheck toyota_tx_rate_checks[] = {
+      {.addr = 0x2E4U, .bus = 0U, .frequency = 100U, .burst = 5U},  // STEERING_LKA, every control cycle
+      {.addr = 0x191U, .bus = 0U, .frequency = 50U, .burst = 3U},   // STEERING_LTA
+      {.addr = 0x343U, .bus = 0U, .frequency = 33U, .burst = 3U},   // ACC_CONTROL
+      {.addr = 0x412U, .bus = 0U, .frequency = 5U, .burst = 4U},    // LKAS_HUD, 5 Hz and on change
+      {.addr = 0x1D2U, .bus = 0U, .frequency = 1U, .burst = 2U},    // PCM cancel, not sent by the reference car
+      {.addr = 0x283U, .bus = 0U, .frequency = 1U, .burst = 2U},    // PRE_COLLISION, zero payload, not sent
+      {.addr = 0x750U, .bus = 0U, .frequency = 5U, .burst = 2U},    // radar tester present, DISABLE_RADAR cars only
+    };
+    SET_TX_RATE_CHECKS(toyota_tx_rate_checks, ret);
+  }
+#endif
+
   return ret;
 }
 
