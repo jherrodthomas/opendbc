@@ -105,8 +105,35 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
   def _rx_all_checked_msgs(self):
     # PCM_CRUISE before the gas message: on non-SecOC cars both are PCM_CRUISE, and the gas message leaves gas released
     for msg in (self._speed_msg(0), self._user_brake_msg(False), self._pcm_status_msg(False),
-                self._user_gas_msg(False), self._torque_meas_msg(0)):
+                self._user_gas_msg(False), self._torque_meas_msg(0), *[m for m, _ in self._reference_rx_check_msgs()]):
       self.assertTrue(self._rx(msg))
+
+  def _reference_rx_check_msgs(self):
+    # LionDriver TSR-110, TSR-401: RX checks the reference build adds on non-SecOC cars with BRAKE_MODULE, with their nominal frequency in Hz
+    if not LIONDRIVER_REFERENCE or self.SAFETY_PARAM & (ToyotaSafetyFlags.SECOC | ToyotaSafetyFlags.ALT_BRAKE):
+      return []
+    return [(self.packer.make_can_msg_safety("EPS_STATUS", 0, {}), 25),
+            (self.packer.make_can_msg_safety("PCM_CRUISE_2", 0, {}), 33)]
+
+  def test_reference_rx_checks(self):
+    # the reference build supervises EPS_STATUS and PCM_CRUISE_2: a bad checksum is rejected, and without the message
+    # a PCM rising edge does not engage
+    for msg, _ in self._reference_rx_check_msgs():
+      with self.subTest(addr=hex(msg[0].addr)):
+        self.assertTrue(self._rx(msg))
+        msg[0].data[0] ^= 0x01
+        self.assertFalse(self._rx(msg))
+
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        for m in (self._speed_msg(0), self._user_brake_msg(False), self._user_gas_msg(False), self._torque_meas_msg(0)):
+          self._rx(m)
+        for m, _ in self._reference_rx_check_msgs():
+          if m[0].addr != msg[0].addr:
+            self._rx(m)
+        self._rx(self._pcm_status_msg(False))
+        self._rx(self._pcm_status_msg(True))
+        self.assertFalse(self.safety.get_controls_allowed())
 
   def test_rx_timeout_5_periods(self):
     # LionDriver TSR-401: an RX check lags after 5 nominal periods, without the default 1 s floor.
@@ -150,7 +177,7 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
   def _rx_check_msgs(self):
     # one message per RX check of the safety mode, with its nominal frequency in Hz
     return [(self._speed_msg(0), 83), (self._torque_meas_msg(0), 50),
-            (self._pcm_status_msg(False), 33), (self._user_brake_msg(False), 40)]
+            (self._pcm_status_msg(False), 33), (self._user_brake_msg(False), 40)] + self._reference_rx_check_msgs()
 
   def test_rx_timeout_5_periods_each_msg(self):
     # LionDriver TSR-401 for every RX check, not only the shortest period: each message
