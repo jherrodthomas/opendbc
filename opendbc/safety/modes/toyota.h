@@ -93,8 +93,8 @@ static int toyota_dbc_eps_torque_factor = 100;   // conversion factor for STEER_
 // unavailability. The code set is the one openpilot's host already treats as a steering fault (TEMP_STEER_FAULTS and
 // PERM_STEER_FAULTS in opendbc/car/toyota/carstate.py), so the envelope and the host stop lateral control on the same
 // codes; it is reverse-engineered and to be confirmed for the reference EPS firmware. Authority cannot be granted before
-// a valid EPS_STATUS is received (RX check, TSR-306), and every valid frame updates the state.
-static bool toyota_eps_lka_fault = false;
+// a valid EPS_STATUS is received (RX check, TSR-306), and every valid frame updates the state. The state is kept in
+// safety_eps_fault, which the panda reports to the host (reset on every safety mode change).
 
 static bool toyota_lka_state_is_fault(int lka_state) {
   bool fault;
@@ -208,7 +208,7 @@ static void toyota_rx_hook(const CANPacket_t *msg) {
 #ifdef LIONDRIVER_REFERENCE
     if (msg_matches(msg, 0x262U, 0U, 8U)) {
       int lka_state = (msg->data[3] >> 1U) & 0x7FU;  // EPS_STATUS.LKA_STATE (toyota_nodsu_pt_generated.dbc)
-      toyota_eps_lka_fault = toyota_lka_state_is_fault(lka_state);
+      safety_eps_fault = toyota_lka_state_is_fault(lka_state);
     }
 #endif
   }
@@ -388,7 +388,7 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
 #ifdef LIONDRIVER_REFERENCE
       // LionDriver TSR-110: no torque and no steer request while the EPS reports a fault (checked before the limit
       // checks so that a refused frame does not update their state)
-      if (toyota_eps_lka_fault && ((desired_torque != 0) || steer_req)) {
+      if (safety_eps_fault && ((desired_torque != 0) || steer_req)) {
         tx = false;
       } else {
         if (steer_torque_cmd_checks(desired_torque, steer_req, TOYOTA_TORQUE_STEERING_LIMITS)) {
@@ -453,9 +453,6 @@ static safety_config toyota_init(uint16_t param) {
   toyota_stock_longitudinal = GET_FLAG(param, TOYOTA_PARAM_STOCK_LONGITUDINAL);
   toyota_lta = GET_FLAG(param, TOYOTA_PARAM_LTA);
   toyota_dbc_eps_torque_factor = param & TOYOTA_EPS_FACTOR;
-#ifdef LIONDRIVER_REFERENCE
-  toyota_eps_lka_fault = false;
-#endif
 
   safety_config ret;
   if (toyota_secoc) {
