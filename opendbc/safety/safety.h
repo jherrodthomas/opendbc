@@ -239,11 +239,28 @@ static bool tx_msg_safety_check(const CANPacket_t *msg, const CanMsg msg_list[],
   return whitelisted;
 }
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver TSR-408: note the arrival of a supervised actuation message from the SoC, whatever its content
+static void tx_arrival_update(const CANPacket_t *msg) {
+  for (int i = 0; i < current_safety_config.tx_arrival_checks_len; i++) {
+    TxArrivalCheck *check = &current_safety_config.tx_arrival_checks[i];
+    if (msg_matches(msg, check->addr, check->bus)) {
+      check->last_ts = microsecond_timer_get();
+    }
+  }
+}
+#endif
+
 bool safety_tx_hook(CANPacket_t *msg) {
   bool whitelisted = tx_msg_safety_check(msg, current_safety_config.tx_msgs, current_safety_config.tx_msgs_len);
   if ((current_safety_mode == SAFETY_ALLOUTPUT) || (current_safety_mode == SAFETY_ELM327)) {
     whitelisted = true;
   }
+#ifdef LIONDRIVER_REFERENCE
+  if (whitelisted) {
+    tx_arrival_update(msg);
+  }
+#endif
 
   bool safety_allowed = false;
   if (whitelisted) {
@@ -352,6 +369,30 @@ static bool rx_checks_allow_engagement(void) {
   return allow;
 }
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver TSR-408: while authority is granted, every supervised actuation message must keep arriving from the
+// SoC. Supervision starts when authority is granted, so a message not sent before the grant gets its full timeout.
+static bool tx_arrival_controls_allowed_prev = false;
+
+static bool tx_arrival_ok(uint32_t ts) {
+  bool ok = true;
+  if (controls_allowed && !tx_arrival_controls_allowed_prev) {
+    for (int i = 0; i < current_safety_config.tx_arrival_checks_len; i++) {
+      current_safety_config.tx_arrival_checks[i].last_ts = ts;
+    }
+  }
+  if (controls_allowed) {
+    for (int i = 0; i < current_safety_config.tx_arrival_checks_len; i++) {
+      const TxArrivalCheck *check = &current_safety_config.tx_arrival_checks[i];
+      if (safety_get_ts_elapsed(ts, check->last_ts) > check->timeout_us) {
+        ok = false;
+      }
+    }
+  }
+  return ok;
+}
+#endif
+
 // periodic safety function called by main (LionDriver: 100 Hz safety task). Now just a check for lagging safety messages
 void safety_tick(void) {
   bool rx_checks_invalid = false;
@@ -367,6 +408,13 @@ void safety_tick(void) {
       controls_allowed = false;
     }
   }
+
+#ifdef LIONDRIVER_REFERENCE
+  if (!tx_arrival_ok(ts)) {
+    controls_allowed = false;
+  }
+  tx_arrival_controls_allowed_prev = controls_allowed;
+#endif
 
   safety_rx_checks_invalid = rx_checks_invalid;
 }
@@ -484,6 +532,9 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   reset_sample(&angle_meas);
 
   controls_allowed = false;
+#ifdef LIONDRIVER_REFERENCE
+  tx_arrival_controls_allowed_prev = false;
+#endif
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
   safety_eps_fault = false;

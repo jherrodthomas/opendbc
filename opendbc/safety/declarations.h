@@ -42,13 +42,15 @@
 
 #define BUILD_SAFETY_CFG(rx, tx) ((safety_config){(rx), (sizeof((rx)) / sizeof((rx)[0])), \
                                                   (tx), (sizeof((tx)) / sizeof((tx)[0])), \
-                                                  false, 0U})
+                                                  false, 0U, NULL, 0})
 #define SET_RX_CHECKS(rx, config) \
   do { \
     (config).rx_checks = (rx); \
     (config).rx_checks_len = sizeof((rx)) / sizeof((rx)[0]); \
     (config).disable_forwarding = false; \
     (config).rx_timeout_periods = 0U; \
+    (config).tx_arrival_checks = NULL; \
+    (config).tx_arrival_checks_len = 0; \
   } while (0);
 
 #define SET_TX_MSGS(tx, config) \
@@ -57,6 +59,8 @@
     (config).tx_msgs_len = sizeof((tx)) / sizeof((tx)[0]); \
     (config).disable_forwarding = false; \
     (config).rx_timeout_periods = 0U; \
+    (config).tx_arrival_checks = NULL; \
+    (config).tx_arrival_checks_len = 0; \
   } while (0);
 
 #define UPDATE_VEHICLE_SPEED(val_ms) (update_sample(&vehicle_speed, ROUND((val_ms) * VEHICLE_SPEED_FACTOR)))
@@ -205,6 +209,15 @@ typedef struct {
   RxStatus status;
 } RxCheck;
 
+// LionDriver TSR-408: an actuation message the SoC must keep sending while authority is granted. If no frame of it
+// reaches the TX hook for longer than timeout_us, the periodic safety task revokes authority.
+typedef struct {
+  const uint32_t addr;
+  const uint8_t bus;
+  const uint32_t timeout_us;
+  uint32_t last_ts;  // arrival of the newest frame; reset to the current time when authority is granted
+} TxArrivalCheck;
+
 typedef struct {
   RxCheck *rx_checks;
   int rx_checks_len;
@@ -212,6 +225,8 @@ typedef struct {
   int tx_msgs_len;
   bool disable_forwarding;
   uint8_t rx_timeout_periods;        // LionDriver TSR-401: if non-zero, an RX check lags after this many missed periods; 0 keeps max(10 periods, 1 s)
+  TxArrivalCheck *tx_arrival_checks;  // LionDriver TSR-408: NULL / 0 for no supervision
+  int tx_arrival_checks_len;
 } safety_config;
 
 typedef uint32_t (*get_checksum_t)(const CANPacket_t *msg);

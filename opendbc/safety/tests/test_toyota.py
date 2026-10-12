@@ -263,6 +263,121 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     self._rx(self._pcm_status_msg(True))
     self.assertFalse(self.safety.get_controls_allowed())
 
+  def _tx_arrival_msgs(self):
+    # LionDriver TSR-408: actuation frames the reference build requires from the SoC while authority is granted, with
+    # their timeout in us. LKA torque control without SecOC only; ACC_CONTROL only with openpilot longitudinal
+    if not LIONDRIVER_REFERENCE or self.SAFETY_PARAM & (ToyotaSafetyFlags.SECOC | ToyotaSafetyFlags.LTA):
+      return []
+    msgs = [(self._torque_cmd_msg(0, steer_req=0), 50000)]
+    if not self.SAFETY_PARAM & ToyotaSafetyFlags.STOCK_LONGITUDINAL:
+      msgs.append((self._accel_msg_343(0), 100000))
+    return msgs
+
+  def _rx_only(self, cruise_engaged=True):
+    # one cycle of every RX check, with the PCM cruise state given (cruise off would end the engagement)
+    for msg, _ in self._rx_check_msgs():
+      if msg[0].addr == self._pcm_status_msg(False)[0].addr:
+        msg = self._pcm_status_msg(cruise_engaged)
+      self.assertTrue(self._rx(msg))
+
+  def _rx_tx_live(self, skip_tx_addr=None):
+    # one cycle of a live, engaged bus: every RX check and every supervised actuation frame (except skip_tx_addr)
+    self._rx_only()
+    for msg, _ in self._tx_arrival_msgs():
+      if msg[0].addr != skip_tx_addr:
+        self.assertTrue(self._tx(msg))
+
+  def test_tx_arrival_supervision(self):
+    # LionDriver TSR-408: while authority is granted, each supervised actuation frame revokes it once it has not
+    # arrived for longer than its timeout, while everything else keeps arriving
+    msgs = self._tx_arrival_msgs()
+    if not msgs:
+      raise unittest.SkipTest("reference build, LKA torque control without SecOC")
+    for msg, timeout_us in msgs:
+      with self.subTest(addr=hex(msg[0].addr)):
+        for elapsed_us, allowed in ((timeout_us, True), (timeout_us + 1, False)):
+          self._reset_safety_hooks()
+          self.safety.set_timer(0)
+          self._rx_only(cruise_engaged=False)
+          self._rx_tx_live()  # PCM cruise rising edge: authority granted
+          self.safety.safety_tick()
+          self.assertTrue(self.safety.get_controls_allowed())
+          # 10 ms safety task steps up to the check, with the other messages still arriving
+          for t in range(10000, elapsed_us, 10000):
+            self.safety.set_timer(t)
+            self._rx_tx_live(skip_tx_addr=msg[0].addr)
+            self.safety.safety_tick()
+            self.assertTrue(self.safety.get_controls_allowed(), t)
+          self.safety.set_timer(elapsed_us)
+          self._rx_tx_live(skip_tx_addr=msg[0].addr)
+          self.safety.safety_tick()
+          self.assertEqual(allowed, self.safety.get_controls_allowed())
+
+  def test_tx_arrival_starts_at_grant(self):
+    # LionDriver TSR-408: frames that stopped before authority was granted get the full timeout from the grant, and
+    # are not supervised while authority is not granted
+    msgs = self._tx_arrival_msgs()
+    if not msgs:
+      raise unittest.SkipTest("reference build, LKA torque control without SecOC")
+    timeout_us = min(t for _, t in msgs)
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx_only(cruise_engaged=False)
+    for msg, _ in msgs:
+      self.assertTrue(self._tx(msg))
+    self.safety.safety_tick()
+    # no actuation frames for 1 s while not engaged: nothing to revoke
+    grant_us = 1000000
+    for t in range(10000, grant_us + 1, 10000):
+      self.safety.set_timer(t)
+      self._rx_only(cruise_engaged=False)
+      self.safety.safety_tick()
+    self._rx_only(cruise_engaged=True)  # PCM cruise rising edge: authority granted
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.safety_tick()
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.set_timer(grant_us + timeout_us)
+    self._rx_only()
+    self.safety.safety_tick()
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.set_timer(grant_us + timeout_us + 1)
+    self.safety.safety_tick()
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def test_tx_arrival_acc_control_only_with_openpilot_longitudinal(self):
+    # LionDriver TSR-408: with stock longitudinal the SoC sends no ACC commands, so a missing ACC_CONTROL is tolerated;
+    # STEERING_LKA keeps arriving
+    msgs = self._tx_arrival_msgs()
+    if not msgs or not self.SAFETY_PARAM & ToyotaSafetyFlags.STOCK_LONGITUDINAL:
+      raise unittest.SkipTest("reference build, stock longitudinal")
+    self.assertEqual([m[0].addr for m, _ in msgs], [0x2E4])
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx_only(cruise_engaged=False)
+    self._rx_tx_live()  # PCM cruise rising edge: authority granted
+    for t in range(10000, 300001, 10000):
+      self.safety.set_timer(t)
+      self._rx_tx_live()
+      self.safety.safety_tick()
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_tx_arrival_not_supervised_outside_reference(self):
+    # LionDriver TSR-408 applies to the reference configuration only: elsewhere, missing actuation frames alone do not
+    # revoke authority (the RX checks keep arriving)
+    if self._tx_arrival_msgs():
+      raise unittest.SkipTest("supervised configuration")
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx_only(cruise_engaged=False)
+    self._rx_only()  # PCM cruise rising edge: authority granted
+    self.assertTrue(self.safety.get_controls_allowed())
+    self.safety.safety_tick()
+    for t in range(10000, 300001, 10000):
+      self.safety.set_timer(t)
+      self._rx_only()
+      self.safety.safety_tick()
+    self.assertTrue(self.safety.get_controls_allowed())
+
   def _rx_check_msgs(self):
     # one message per RX check of the safety mode, with its nominal frequency in Hz
     return [(self._speed_msg(0), 83), (self._torque_meas_msg(0), 50),
@@ -281,6 +396,9 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
           for j, (msg, _) in enumerate(msgs):
             if t == 0 or j != i:
               self.assertTrue(self._rx(msg))
+          # the SoC keeps sending its actuation frames (TSR-408), so only the RX timeout is tested
+          for msg, _ in self._tx_arrival_msgs():
+            self.assertTrue(self._tx(msg))
           self.safety.set_controls_allowed(True)
           self.safety.safety_tick()
           self.assertEqual(valid, self.safety.safety_config_valid())
