@@ -85,6 +85,79 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
       for addr, bus, length in blocked:
         self.assertFalse(self._tx(libsafety_py.make_CANPacket(addr, bus, b"\x00" * length)), hex(addr))
 
+  def setUp(self):
+    super().setUp()
+    # LionDriver TSR-306: controls are only granted when every RX check is valid, as on a live bus
+    self._rx_all_checked_msgs()
+
+  def _rx_all_checked_msgs(self):
+    # PCM_CRUISE before the gas message: on non-SecOC cars both are PCM_CRUISE, and the gas message leaves gas released
+    for msg in (self._speed_msg(0), self._user_brake_msg(False), self._pcm_status_msg(False),
+                self._user_gas_msg(False), self._torque_meas_msg(0)):
+      self.assertTrue(self._rx(msg))
+
+  def test_rx_timeout_5_periods(self):
+    # LionDriver TSR-401: an RX check lags after 5 nominal periods, without the default 1 s floor.
+    # WHEEL_SPEEDS (0xAA, 83 Hz) has the shortest period, so it is the first to time out.
+    threshold_us = int(1e6 / 83) * 5
+    for elapsed_us, valid in ((threshold_us, True), (threshold_us + 1, False)):
+      with self.subTest(elapsed_us=elapsed_us):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self._rx_all_checked_msgs()
+        self.safety.safety_tick()
+        self.assertTrue(self.safety.safety_config_valid())
+
+        self.safety.set_timer(elapsed_us)
+        self.safety.set_controls_allowed(True)
+        self.safety.safety_tick()
+        self.assertEqual(valid, self.safety.safety_config_valid())
+        self.assertEqual(valid, self.safety.get_controls_allowed())
+
+  def test_no_engagement_with_invalid_rx_checks(self):
+    # LionDriver TSR-306: a PCM rising edge does not grant controls while an RX check is failed,
+    # including a timeout that safety_tick has not evaluated yet
+    threshold_us = int(1e6 / 83) * 5
+    for elapsed_us, engages in ((threshold_us, True), (threshold_us + 1, False)):
+      with self.subTest(elapsed_us=elapsed_us):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self._rx_all_checked_msgs()
+        self.safety.set_timer(elapsed_us)
+        self._rx(self._pcm_status_msg(False))
+        self._rx(self._pcm_status_msg(True))
+        self.assertEqual(engages, self.safety.get_controls_allowed())
+
+    # a message never received also blocks engagement
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._pcm_status_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+  def _rx_check_msgs(self):
+    # one message per RX check of the safety mode, with its nominal frequency in Hz
+    return [(self._speed_msg(0), 83), (self._torque_meas_msg(0), 50),
+            (self._pcm_status_msg(False), 33), (self._user_brake_msg(False), 40)]
+
+  def test_rx_timeout_5_periods_each_msg(self):
+    # LionDriver TSR-401 for every RX check, not only the shortest period: each message
+    # times out on its own after 5 of its nominal periods while the others keep arriving
+    msgs = self._rx_check_msgs()
+    for i, (_, freq) in enumerate(msgs):
+      threshold_us = int(1e6 / freq) * 5
+      with self.subTest(msg=i, threshold_us=threshold_us):
+        self._reset_safety_hooks()
+        for t, valid in ((0, True), (threshold_us, True), (threshold_us + 1, False)):
+          self.safety.set_timer(t)
+          for j, (msg, _) in enumerate(msgs):
+            if t == 0 or j != i:
+              self.assertTrue(self._rx(msg))
+          self.safety.set_controls_allowed(True)
+          self.safety.safety_tick()
+          self.assertEqual(valid, self.safety.safety_config_valid())
+          self.assertEqual(valid, self.safety.get_controls_allowed())
+
   def test_diagnostics(self, stock_longitudinal: bool = False, ecu_disabled: bool = True):
     for should_tx, msg in ((False, b"\x6D\x02\x3E\x00\x00\x00\x00\x00"),  # fwdCamera tester present
                            (False, b"\x0F\x03\xAA\xAA\x00\x00\x00\x00"),  # non-tester present
@@ -349,6 +422,10 @@ class TestToyotaSecOcSafetyBase(TestToyotaSafetyBase):
   def _user_gas_msg(self, gas):
     values = {"GAS_PEDAL_USER": gas}
     return self.packer.make_can_msg_safety("GAS_PEDAL", 0, values)
+
+  def _rx_check_msgs(self):
+    return [(self._speed_msg(0), 83), (self._torque_meas_msg(0), 50), (self._pcm_status_msg(False), 32),
+            (self._user_gas_msg(0), 42), (self._user_brake_msg(False), 50)]
 
   # This platform sends both STEERING_LTA (same as other Toyota) and STEERING_LTA_2 (SecOC signed)
   # STEERING_LTA is checked for no-actuation by the base class, STEERING_LTA_2 is checked for no-actuation below

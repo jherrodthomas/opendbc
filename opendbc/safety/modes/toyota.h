@@ -54,6 +54,9 @@
   {.msg = {{0x116, 0, 8, 42U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
   {.msg = {{0x101, 0, 8, 50U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }, { 0 }}},  \
 
+// LionDriver TSR-401: RX timeout threshold in nominal message periods
+#define TOYOTA_RX_TIMEOUT_PERIODS 5U
+
 static bool toyota_secoc = false;
 static bool toyota_alt_brake = false;
 static bool toyota_stock_longitudinal = false;
@@ -422,6 +425,9 @@ static safety_config toyota_init(uint16_t param) {
       SET_RX_CHECKS(toyota_lka_alt_brake_rx_checks, ret);
     }
   }
+
+  // LionDriver TSR-401: an RX check lags after 5 missed periods (0x1D2 at 33 Hz: 0.15 s, plus one 10 ms safety task period)
+  ret.rx_timeout_periods = TOYOTA_RX_TIMEOUT_PERIODS;
 
   return ret;
 }
