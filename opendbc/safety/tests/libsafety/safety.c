@@ -54,6 +54,10 @@ bool get_relay_malfunction(void){
   return relay_malfunction;
 }
 
+bool get_safety_eps_fault(void){
+  return safety_eps_fault;
+}
+
 bool get_gas_pressed_prev(void){
   return gas_pressed_prev;
 }

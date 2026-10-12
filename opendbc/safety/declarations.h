@@ -275,6 +275,8 @@ extern bool vehicle_moving;
 extern bool acc_main_on; // referred to as "ACC off" in ISO 15622:2018
 extern int cruise_button_prev;
 extern bool safety_rx_checks_invalid;
+// LionDriver TSR-110: the car's EPS reports a fault and the safety mode refuses lateral actuation; reported to the host
+extern bool safety_eps_fault;
 
 // for safety modes with torque steering control
 extern int desired_torque_last;       // last desired steer torque

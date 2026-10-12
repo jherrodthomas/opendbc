@@ -132,9 +132,16 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
         self.assertTrue(self._rx(self._eps_status_msg(lka_state)))
         self.safety.set_controls_allowed(True)
         fault = lka_state in fault_states
+        self.assertEqual(fault, self.safety.get_safety_eps_fault())  # reported to the host via the panda health
         self.assertTrue(self._tx(self._torque_cmd_msg(0, steer_req=0)))
         self.assertEqual(not fault, self._tx(self._torque_cmd_msg(0, steer_req=1)))
         self.assertEqual(not fault, self._tx(self._torque_cmd_msg(10, steer_req=1)))
+
+    # a safety mode change clears the reported state
+    self.assertTrue(self._rx(self._eps_status_msg(25)))
+    self.assertTrue(self.safety.get_safety_eps_fault())
+    self._reset_safety_hooks()
+    self.assertFalse(self.safety.get_safety_eps_fault())
 
     # the fault clears with the next frame that reports a non-fault state
     self._reset_safety_hooks()

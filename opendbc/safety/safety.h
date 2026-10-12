@@ -71,6 +71,7 @@ bool vehicle_moving = false;
 bool acc_main_on = false;  // referred to as "ACC off" in ISO 15622:2018
 int cruise_button_prev = 0;
 bool safety_rx_checks_invalid = false;
+bool safety_eps_fault = false;
 
 // for safety modes with torque steering control
 int desired_torque_last = 0;       // last desired steer torque
@@ -485,6 +486,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   controls_allowed = false;
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
+  safety_eps_fault = false;
 
   current_safety_config = (safety_config){0};
 
