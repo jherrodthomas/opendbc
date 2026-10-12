@@ -317,28 +317,50 @@ void gen_crc_lookup_table_16(uint16_t poly, uint16_t crc_lut[]) {
   }
 }
 
+static uint32_t rx_check_frequency(int i) {
+  return current_safety_config.rx_checks[i].msg[current_safety_config.rx_checks[i].status.index].frequency;
+}
+
+static bool rx_check_lagging(int i, uint32_t ts) {
+  const uint8_t MAX_MISSED_MSGS = 10U;
+  uint32_t elapsed_time = safety_get_ts_elapsed(ts, current_safety_config.rx_checks[i].status.last_timestamp);
+  // lag threshold is max of: 1s and MAX_MISSED_MSGS * expected timestep.
+  // Quite conservative to not risk false triggers.
+  // A mode can set rx_timeout_periods for a tighter threshold of that many periods, with no 1s floor
+  // (LionDriver TSR-401: Toyota, 5 periods, so detection is <= 0.2 s with the 100 Hz safety task)
+  uint32_t timestep = 1e6 / rx_check_frequency(i);
+  uint32_t lag_threshold = SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
+  if (current_safety_config.rx_timeout_periods > 0U) {
+    lag_threshold = timestep * current_safety_config.rx_timeout_periods;
+  }
+  return elapsed_time > lag_threshold;
+}
+
+// LionDriver TSR-306: for modes with rx_timeout_periods, controls are only granted when every RX check is valid
+// at that moment, including a timeout that the periodic safety_tick has not evaluated yet
+static bool rx_checks_allow_engagement(void) {
+  bool allow = true;
+  if (current_safety_config.rx_timeout_periods > 0U) {
+    uint32_t ts = microsecond_timer_get();
+    for (int i = 0; i < current_safety_config.rx_checks_len; i++) {
+      if (rx_check_lagging(i, ts) || !is_msg_valid(current_safety_config.rx_checks, i)) {
+        allow = false;
+      }
+    }
+  }
+  return allow;
+}
+
 // periodic safety function called by main (LionDriver: 100 Hz safety task). Now just a check for lagging safety messages
 void safety_tick(void) {
-  const uint8_t MAX_MISSED_MSGS = 10U;
   bool rx_checks_invalid = false;
   uint32_t ts = microsecond_timer_get();
   for (int i=0; i < current_safety_config.rx_checks_len; i++) {
-    uint32_t elapsed_time = safety_get_ts_elapsed(ts, current_safety_config.rx_checks[i].status.last_timestamp);
-    // lag threshold is max of: 1s and MAX_MISSED_MSGS * expected timestep.
-    // Quite conservative to not risk false triggers.
-    // A mode can set rx_timeout_periods for a tighter threshold of that many periods, with no 1s floor
-    // (LionDriver TSR-401: Toyota, 5 periods, so detection is <= 0.2 s with the 100 Hz safety task)
-    uint32_t frequency = current_safety_config.rx_checks[i].msg[current_safety_config.rx_checks[i].status.index].frequency;
-    uint32_t timestep = 1e6 / frequency;
-    uint32_t lag_threshold = SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
-    if (current_safety_config.rx_timeout_periods > 0U) {
-      lag_threshold = timestep * current_safety_config.rx_timeout_periods;
-    }
-    bool lagging = elapsed_time > lag_threshold;
+    bool lagging = rx_check_lagging(i, ts);
     current_safety_config.rx_checks[i].status.lagging = lagging;
 
     // enforce minimum frequency for safety-relevant messages
-    bool frequency_invalid = frequency < 10U;
+    bool frequency_invalid = rx_check_frequency(i) < 10U;
     if (lagging || frequency_invalid || !is_msg_valid(current_safety_config.rx_checks, i)) {
       rx_checks_invalid = true;
       controls_allowed = false;
@@ -526,7 +548,7 @@ void pcm_cruise_check(bool cruise_engaged) {
     controls_allowed = false;
   }
   if (cruise_engaged && !cruise_engaged_prev) {
-    controls_allowed = true;
+    controls_allowed = rx_checks_allow_engagement();
   }
   cruise_engaged_prev = cruise_engaged;
 }
