@@ -317,7 +317,7 @@ void gen_crc_lookup_table_16(uint16_t poly, uint16_t crc_lut[]) {
   }
 }
 
-// 1Hz safety function called by main. Now just a check for lagging safety messages
+// periodic safety function called by main (LionDriver: 100 Hz safety task). Now just a check for lagging safety messages
 void safety_tick(void) {
   const uint8_t MAX_MISSED_MSGS = 10U;
   bool rx_checks_invalid = false;
@@ -326,10 +326,15 @@ void safety_tick(void) {
     uint32_t elapsed_time = safety_get_ts_elapsed(ts, current_safety_config.rx_checks[i].status.last_timestamp);
     // lag threshold is max of: 1s and MAX_MISSED_MSGS * expected timestep.
     // Quite conservative to not risk false triggers.
-    // 2s of lag is worse case, since the function is called at 1Hz
+    // A mode can set rx_timeout_periods for a tighter threshold of that many periods, with no 1s floor
+    // (LionDriver TSR-401: Toyota, 5 periods, so detection is <= 0.2 s with the 100 Hz safety task)
     uint32_t frequency = current_safety_config.rx_checks[i].msg[current_safety_config.rx_checks[i].status.index].frequency;
     uint32_t timestep = 1e6 / frequency;
-    bool lagging = elapsed_time > SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
+    uint32_t lag_threshold = SAFETY_MAX(timestep * MAX_MISSED_MSGS, 1e6);
+    if (current_safety_config.rx_timeout_periods > 0U) {
+      lag_threshold = timestep * current_safety_config.rx_timeout_periods;
+    }
+    bool lagging = elapsed_time > lag_threshold;
     current_safety_config.rx_checks[i].status.lagging = lagging;
 
     // enforce minimum frequency for safety-relevant messages

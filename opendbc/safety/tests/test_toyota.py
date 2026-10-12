@@ -77,6 +77,29 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     values = {"CRUISE_ACTIVE": enable}
     return self.packer.make_can_msg_safety("PCM_CRUISE", 0, values)
 
+  def _rx_all_checked_msgs(self):
+    for msg in (self._speed_msg(0), self._user_brake_msg(False), self._user_gas_msg(False),
+                self._pcm_status_msg(False), self._torque_meas_msg(0)):
+      self.assertTrue(self._rx(msg))
+
+  def test_rx_timeout_5_periods(self):
+    # LionDriver TSR-401: an RX check lags after 5 nominal periods, without the default 1 s floor.
+    # WHEEL_SPEEDS (0xAA, 83 Hz) has the shortest period, so it is the first to time out.
+    threshold_us = int(1e6 / 83) * 5
+    for elapsed_us, valid in ((threshold_us, True), (threshold_us + 1, False)):
+      with self.subTest(elapsed_us=elapsed_us):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self._rx_all_checked_msgs()
+        self.safety.safety_tick()
+        self.assertTrue(self.safety.safety_config_valid())
+
+        self.safety.set_timer(elapsed_us)
+        self.safety.set_controls_allowed(True)
+        self.safety.safety_tick()
+        self.assertEqual(valid, self.safety.safety_config_valid())
+        self.assertEqual(valid, self.safety.get_controls_allowed())
+
   def test_diagnostics(self, stock_longitudinal: bool = False, ecu_disabled: bool = True):
     for should_tx, msg in ((False, b"\x6D\x02\x3E\x00\x00\x00\x00\x00"),  # fwdCamera tester present
                            (False, b"\x0F\x03\xAA\xAA\x00\x00\x00\x00"),  # non-tester present
