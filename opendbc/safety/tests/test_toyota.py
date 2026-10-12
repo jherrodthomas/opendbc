@@ -113,7 +113,53 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     if not LIONDRIVER_REFERENCE or self.SAFETY_PARAM & (ToyotaSafetyFlags.SECOC | ToyotaSafetyFlags.ALT_BRAKE):
       return []
     return [(self._eps_status_msg(5), 25),
-            (self.packer.make_can_msg_safety("PCM_CRUISE_2", 0, {}), 33)]
+            (self._pcm_cruise_2_msg(main_on=True), 33)]
+
+  def _pcm_cruise_2_msg(self, main_on: bool):
+    return self.packer.make_can_msg_safety("PCM_CRUISE_2", 0, {"MAIN_ON": int(main_on)})
+
+  def test_cruise_active_with_main_off(self):
+    # LionDriver TSR-405(c): CRUISE_ACTIVE with MAIN_ON = 0 is refused at once when cruise becomes active, and revokes
+    # authority after the 150 ms tolerance when main goes off while engaged
+    if not self._reference_rx_check_msgs():
+      raise unittest.SkipTest("reference build, non-SecOC cars with PCM_CRUISE_2")
+    tolerance_us = 150000
+
+    # cruise becomes active while main is off: no engagement
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx_all_checked_msgs()
+    self.assertTrue(self._rx(self._pcm_cruise_2_msg(main_on=False)))
+    self._rx(self._pcm_status_msg(True))
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    # main goes off while engaged: tolerated up to the tolerance, revoked after it
+    for elapsed_us, allowed in ((tolerance_us, True), (tolerance_us + 1, False)):
+      with self.subTest(elapsed_us=elapsed_us):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self._rx_all_checked_msgs()
+        self._rx(self._pcm_status_msg(True))
+        self.assertTrue(self.safety.get_controls_allowed())
+        self._rx(self._pcm_cruise_2_msg(main_on=False))
+        self.assertTrue(self.safety.get_controls_allowed())
+        self.safety.set_timer(elapsed_us)
+        self._rx(self._pcm_status_msg(True))
+        self.assertEqual(allowed, self.safety.get_controls_allowed())
+
+    # the disagreement ends when main is back on: the tolerance starts again on the next disagreement
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx_all_checked_msgs()
+    self._rx(self._pcm_status_msg(True))
+    self._rx(self._pcm_cruise_2_msg(main_on=False))
+    self.safety.set_timer(tolerance_us // 2)
+    self._rx(self._pcm_cruise_2_msg(main_on=True))
+    self.safety.set_timer(tolerance_us + 10)
+    self._rx(self._pcm_cruise_2_msg(main_on=False))
+    self.safety.set_timer(tolerance_us * 2)
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
 
   def _eps_status_msg(self, lka_state: int):
     return self.packer.make_can_msg_safety("EPS_STATUS", 0, {"LKA_STATE": lka_state})

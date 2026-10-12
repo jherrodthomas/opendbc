@@ -114,6 +114,34 @@ static bool toyota_lka_state_is_fault(int lka_state) {
   }
   return fault;
 }
+
+// LionDriver TSR-405(c) / SWSR-405(c): PCM_CRUISE.CRUISE_ACTIVE (0x1D2) set while PCM_CRUISE_2.MAIN_ON (0x1D3) is 0 is
+// not a valid state. Cruise becoming active while main is off is refused at once; main going off while cruise is
+// active (the driver switching main off, where the two messages can disagree for a frame or two) revokes authority
+// once the disagreement has lasted longer than the tolerance. Not used for alt-brake cars, whose RX set has no 0x1D3.
+#define TOYOTA_CRUISE_MAIN_TOLERANCE_US 150000U  // about 5 periods of the 33 Hz messages; detection <= 0.2 s (TSR-405)
+static bool toyota_main_on = false;
+static bool toyota_cruise_main_mismatch = false;
+static uint32_t toyota_cruise_main_mismatch_start = 0U;
+
+static void toyota_cruise_main_check(bool from_pcm_cruise) {
+  bool mismatch = cruise_engaged_prev && !toyota_main_on;
+  if (!mismatch) {
+    toyota_cruise_main_mismatch = false;
+  } else if (!toyota_cruise_main_mismatch) {
+    toyota_cruise_main_mismatch = true;
+    toyota_cruise_main_mismatch_start = microsecond_timer_get();
+    if (from_pcm_cruise) {
+      // cruise became active while main is off: never a valid engagement
+      controls_allowed = false;
+    }
+  } else {
+    uint32_t elapsed = safety_get_ts_elapsed(microsecond_timer_get(), toyota_cruise_main_mismatch_start);
+    if (elapsed > TOYOTA_CRUISE_MAIN_TOLERANCE_US) {
+      controls_allowed = false;
+    }
+  }
+}
 #endif
 
 static uint32_t toyota_compute_checksum(const CANPacket_t *msg) {
@@ -209,6 +237,15 @@ static void toyota_rx_hook(const CANPacket_t *msg) {
     if (msg_matches(msg, 0x262U, 0U, 8U)) {
       int lka_state = (msg->data[3] >> 1U) & 0x7FU;  // EPS_STATUS.LKA_STATE (toyota_nodsu_pt_generated.dbc)
       safety_eps_fault = toyota_lka_state_is_fault(lka_state);
+    }
+    if (!toyota_alt_brake) {
+      if (msg_matches(msg, 0x1D3U, 0U, 8U)) {
+        toyota_main_on = GET_BIT(msg, 15U);  // PCM_CRUISE_2.MAIN_ON
+        toyota_cruise_main_check(false);
+      }
+      if (msg_matches(msg, 0x1D2U, 0U)) {
+        toyota_cruise_main_check(true);
+      }
     }
 #endif
   }
@@ -453,6 +490,11 @@ static safety_config toyota_init(uint16_t param) {
   toyota_stock_longitudinal = GET_FLAG(param, TOYOTA_PARAM_STOCK_LONGITUDINAL);
   toyota_lta = GET_FLAG(param, TOYOTA_PARAM_LTA);
   toyota_dbc_eps_torque_factor = param & TOYOTA_EPS_FACTOR;
+#ifdef LIONDRIVER_REFERENCE
+  toyota_main_on = false;
+  toyota_cruise_main_mismatch = false;
+  toyota_cruise_main_mismatch_start = 0U;
+#endif
 
   safety_config ret;
   if (toyota_secoc) {
