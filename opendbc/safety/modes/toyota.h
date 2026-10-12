@@ -88,6 +88,34 @@ static bool toyota_stock_longitudinal = false;
 static bool toyota_lta = false;
 static int toyota_dbc_eps_torque_factor = 100;   // conversion factor for STEER_TORQUE_EPS in %: see dbc file
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver TSR-110 / SWSR-110: lateral actuation is refused while EPS_STATUS.LKA_STATE reports a fault or
+// unavailability. The code set is the one openpilot's host already treats as a steering fault (TEMP_STEER_FAULTS and
+// PERM_STEER_FAULTS in opendbc/car/toyota/carstate.py), so the envelope and the host stop lateral control on the same
+// codes; it is reverse-engineered and to be confirmed for the reference EPS firmware. Authority cannot be granted before
+// a valid EPS_STATUS is received (RX check, TSR-306), and every valid frame updates the state.
+static bool toyota_eps_lka_fault = false;
+
+static bool toyota_lka_state_is_fault(int lka_state) {
+  bool fault;
+  switch (lka_state) {
+    case 0:   // initializing / catch-all
+    case 3:   // LKA message missing, unavailable
+    case 9:   // temporary fault 2
+    case 11:  // LKA message missing, unavailable 2
+    case 17:  // permanent fault (prolonged high driver torque)
+    case 21:
+    case 25:  // temporary fault
+      fault = true;
+      break;
+    default:
+      fault = false;
+      break;
+  }
+  return fault;
+}
+#endif
+
 static uint32_t toyota_compute_checksum(const CANPacket_t *msg) {
   int len = GET_LEN(msg);
   uint8_t checksum = (uint8_t)(msg->addr) + (uint8_t)((unsigned int)(msg->addr) >> 8U) + (uint8_t)(len);
@@ -177,6 +205,12 @@ static void toyota_rx_hook(const CANPacket_t *msg) {
     if (toyota_alt_brake && msg_matches(msg, 0x224U, 0U)) {
       brake_pressed = GET_BIT(msg, 5U);  // BRAKE_MODULE.BRAKE_PRESSED (toyota_new_mc_pt_generated.dbc)
     }
+#ifdef LIONDRIVER_REFERENCE
+    if (msg_matches(msg, 0x262U, 0U, 8U)) {
+      int lka_state = (msg->data[3] >> 1U) & 0x7FU;  // EPS_STATUS.LKA_STATE (toyota_nodsu_pt_generated.dbc)
+      toyota_eps_lka_fault = toyota_lka_state_is_fault(lka_state);
+    }
+#endif
   }
 
   // sample speed
@@ -351,9 +385,21 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
     bool steer_req = GET_BIT(msg, 0U);
     // When using LTA (angle control), assert no actuation on LKA message
     if (!toyota_lta) {
+#ifdef LIONDRIVER_REFERENCE
+      // LionDriver TSR-110: no torque and no steer request while the EPS reports a fault (checked before the limit
+      // checks so that a refused frame does not update their state)
+      if (toyota_eps_lka_fault && ((desired_torque != 0) || steer_req)) {
+        tx = false;
+      } else {
+        if (steer_torque_cmd_checks(desired_torque, steer_req, TOYOTA_TORQUE_STEERING_LIMITS)) {
+          tx = false;
+        }
+      }
+#else
       if (steer_torque_cmd_checks(desired_torque, steer_req, TOYOTA_TORQUE_STEERING_LIMITS)) {
         tx = false;
       }
+#endif
     } else {
       if ((desired_torque != 0) || steer_req) {
         tx = false;
@@ -407,6 +453,9 @@ static safety_config toyota_init(uint16_t param) {
   toyota_stock_longitudinal = GET_FLAG(param, TOYOTA_PARAM_STOCK_LONGITUDINAL);
   toyota_lta = GET_FLAG(param, TOYOTA_PARAM_LTA);
   toyota_dbc_eps_torque_factor = param & TOYOTA_EPS_FACTOR;
+#ifdef LIONDRIVER_REFERENCE
+  toyota_eps_lka_fault = false;
+#endif
 
   safety_config ret;
   if (toyota_secoc) {
