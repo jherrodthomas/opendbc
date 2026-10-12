@@ -97,6 +97,148 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
       for addr, bus, length in blocked:
         self.assertFalse(self._tx(libsafety_py.make_CANPacket(addr, bus, b"\x00" * length)), hex(addr))
 
+  def _tx(self, msg):
+    # LionDriver TSR-518: content tests send many frames at one timer value; clear the TX rate windows so that they
+    # check the content limits only. The rate tests below use _tx_rated
+    self.safety.reset_tx_rate_state()
+    return super()._tx(msg)
+
+  def _tx_rated(self, msg):
+    return self.safety.safety_tx_hook(msg)
+
+  def _tx_rate_rows(self):
+    # LionDriver TSR-518 (DN-01): reference build, non-SecOC: (addr, nominal Hz, burst, a frame that passes the content checks)
+    if not LIONDRIVER_REFERENCE or self.SAFETY_PARAM & ToyotaSafetyFlags.SECOC:
+      return []
+    rows = [(0x2E4, 100, 5, lambda: self._torque_cmd_msg(0, steer_req=0)),
+            (0x191, 50, 3, lambda: libsafety_py.make_CANPacket(0x191, 0, b"\x00" * 8)),
+            (0x412, 5, 4, lambda: libsafety_py.make_CANPacket(0x412, 0, b"\x00" * 8)),
+            (0x1D2, 1, 2, lambda: libsafety_py.make_CANPacket(0x1D2, 0, b"\x00" * 8)),
+            (0x343, 33, 3, lambda: self._accel_msg_343(0, cancel_req=1))]
+    if [0x283, 0] in self.TX_MSGS:
+      rows.append((0x283, 1, 2, lambda: libsafety_py.make_CANPacket(0x283, 0, b"\x00" * 7)))
+    if [0x750, 0] in self.TX_MSGS:
+      rows.append((0x750, 5, 2, lambda: libsafety_py.make_CANPacket(0x750, 0, b"\x0F\x02\x3E\x00\x00\x00\x00\x00")))
+    return rows
+
+  @staticmethod
+  def _tx_rate_budget(freq, burst):
+    return -(-freq * 3 // 10) + 1 + burst
+
+  def test_tx_rate_every_whitelisted_id_has_a_budget(self):
+    # every TX-whitelisted ID of the reference build is rate-checked (DN-01 T6)
+    rows = self._tx_rate_rows()
+    if not rows:
+      raise unittest.SkipTest("reference build, non-SecOC")
+    self.assertEqual({addr for addr, *_ in rows}, {addr for addr, bus in self.TX_MSGS})
+
+  def test_tx_rate_flood_rejected(self):
+    # beyond its budget in one window, a frame is rejected; the budget is ceil(f * 0.25 * 1.2) + 1 + burst (DN-01 T2)
+    for addr, freq, burst, make in self._tx_rate_rows():
+      with self.subTest(addr=hex(addr)):
+        self.assertTrue(self._tx(make()), "frame must pass the content checks")
+        self._reset_safety_hooks()
+        self.safety.set_timer(1000000)
+        budget = self._tx_rate_budget(freq, burst)
+        results = [self._tx_rated(make()) for _ in range(budget + 5)]
+        self.assertEqual(results, [True] * budget + [False] * 5)
+        self.assertFalse(self.safety.get_safety_tx_rate_exceeded())  # controls were not allowed: nothing to revoke
+
+  def test_tx_rate_window_slides(self):
+    # the window is made of two half-windows, so a burst cannot double the budget at a window edge (DN-01 §4.2)
+    for addr, freq, burst, make in self._tx_rate_rows():
+      with self.subTest(addr=hex(addr)):
+        self._reset_safety_hooks()
+        budget = self._tx_rate_budget(freq, burst)
+        t0 = 1000000
+        self.safety.set_timer(t0)
+        self.assertTrue(self._tx_rated(make()))
+        self.safety.set_timer(t0 + 240000)
+        for _ in range(budget - 1):
+          self.assertTrue(self._tx_rated(make()))
+        # 15 ms later: a fixed 250 ms window would have started afresh; the sliding window still holds the burst
+        self.safety.set_timer(t0 + 255000)
+        self.assertFalse(self._tx_rated(make()))
+
+  def test_tx_rate_host_cadence_passes(self):
+    # 10 s of the host's cadence, including on-change LKAS_HUD frames: nothing rejected, authority kept (DN-01 T1)
+    rows = {addr: make for addr, _, _, make in self._tx_rate_rows()}
+    if not rows:
+      raise unittest.SkipTest("reference build, non-SecOC")
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(True)
+    for frame in range(1000):
+      self.safety.set_timer(1000000 + frame * 10000)
+      sends = [0x2E4]
+      if frame % 2 == 0:
+        sends.append(0x191)
+      if frame % 3 == 0:
+        sends.append(0x343)
+      if frame % 20 == 0 or frame % 97 in (0, 1, 2):  # 5 Hz, plus alert changes
+        sends.append(0x412)
+      for addr in sends:
+        self.assertTrue(self._tx_rated(rows[addr]()), (frame, hex(addr)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_tx_rate_persistent_excess_revokes(self):
+    # STEERING_LKA at 2x its rate: the third rejected frame in a half-window revokes authority and is reported (DN-01 T3)
+    rows = {addr: make for addr, _, _, make in self._tx_rate_rows()}
+    if not rows:
+      raise unittest.SkipTest("reference build, non-SecOC")
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(True)
+    first_rejection = revoked = None
+    for i in range(200):
+      t = 1000000 + i * 5000  # 200 Hz
+      self.safety.set_timer(t)
+      if not self._tx_rated(rows[0x2E4]()) and first_rejection is None:
+        first_rejection = t
+      if not self.safety.get_controls_allowed():
+        revoked = t
+        break
+    self.assertIsNotNone(revoked)
+    self.assertTrue(self.safety.get_safety_tx_rate_exceeded())
+    self.assertLessEqual(revoked - first_rejection, 100000)  # TSR-518: <= 0.1 s from the first rejected frame
+    self.assertLessEqual(revoked - 1000000, 200000)          # DN-01 §4.2: about 0.19 s from the onset at 2x
+
+    # the report is cleared by the next safety mode change
+    self._reset_safety_hooks()
+    self.assertFalse(self.safety.get_safety_tx_rate_exceeded())
+
+  def test_tx_rate_catch_up_after_stall(self):
+    # after a host stall shorter than the heartbeat limit (0.3 s), the queued frames arrive at once: all pass (DN-01 T4)
+    rows = {addr: make for addr, _, _, make in self._tx_rate_rows()}
+    if not rows:
+      raise unittest.SkipTest("reference build, non-SecOC")
+    for gap_ms in (50, 100, 150, 200, 240, 290):
+      with self.subTest(gap_ms=gap_ms):
+        self._reset_safety_hooks()
+        self.safety.set_controls_allowed(True)
+        t = 1000000
+        for _ in range(100):  # 1 s at 100 Hz
+          self.safety.set_timer(t)
+          self.assertTrue(self._tx_rated(rows[0x2E4]()))
+          t += 10000
+        t += gap_ms * 1000
+        self.safety.set_timer(t)
+        for _ in range(gap_ms // 10):
+          self.assertTrue(self._tx_rated(rows[0x2E4]()))
+        self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_tx_rate_rejected_frame_does_not_update_limits(self):
+    # a frame over budget is rejected before the torque limit checks see it (DN-01 T5)
+    rows = {addr: (freq, burst) for addr, freq, burst, _ in self._tx_rate_rows()}
+    if 0x2E4 not in rows or self.SAFETY_PARAM & ToyotaSafetyFlags.LTA:
+      raise unittest.SkipTest("reference build, LKA torque control")
+    self._reset_safety_hooks()
+    self.safety.set_controls_allowed(True)
+    self.safety.set_timer(1000000)
+    for _ in range(self._tx_rate_budget(*rows[0x2E4])):
+      self.assertTrue(self._tx_rated(self._torque_cmd_msg(0, steer_req=0)))
+    self.assertFalse(self._tx_rated(self._torque_cmd_msg(15, steer_req=1)))  # over budget
+    # if the rejected frame had set the last torque to 15, a step to 30 would pass the rate-up limit of 15
+    self.assertFalse(self._tx(self._torque_cmd_msg(30, steer_req=1)))
+
   def setUp(self):
     super().setUp()
     # LionDriver TSR-306: controls are only granted when every RX check is valid, as on a live bus

@@ -42,7 +42,7 @@
 
 #define BUILD_SAFETY_CFG(rx, tx) ((safety_config){(rx), (sizeof((rx)) / sizeof((rx)[0])), \
                                                   (tx), (sizeof((tx)) / sizeof((tx)[0])), \
-                                                  false, 0U, NULL, 0})
+                                                  false, 0U, NULL, 0, NULL, 0})
 #define SET_RX_CHECKS(rx, config) \
   do { \
     (config).rx_checks = (rx); \
@@ -51,6 +51,8 @@
     (config).rx_timeout_periods = 0U; \
     (config).tx_arrival_checks = NULL; \
     (config).tx_arrival_checks_len = 0; \
+    (config).tx_rate_checks = NULL; \
+    (config).tx_rate_checks_len = 0; \
   } while (0);
 
 #define SET_TX_MSGS(tx, config) \
@@ -61,6 +63,14 @@
     (config).rx_timeout_periods = 0U; \
     (config).tx_arrival_checks = NULL; \
     (config).tx_arrival_checks_len = 0; \
+    (config).tx_rate_checks = NULL; \
+    (config).tx_rate_checks_len = 0; \
+  } while (0);
+
+#define SET_TX_RATE_CHECKS(checks, config) \
+  do { \
+    (config).tx_rate_checks = (checks); \
+    (config).tx_rate_checks_len = sizeof((checks)) / sizeof((checks)[0]); \
   } while (0);
 
 #define UPDATE_VEHICLE_SPEED(val_ms) (update_sample(&vehicle_speed, ROUND((val_ms) * VEHICLE_SPEED_FACTOR)))
@@ -209,6 +219,24 @@ typedef struct {
   RxStatus status;
 } RxCheck;
 
+// LionDriver TSR-518 (design note DN-01): per-ID TX rate supervision. Frames of an ID are counted in a 250 ms window
+// made of two half-windows; a frame beyond ceil(frequency * 0.25 * 1.2) + 1 + burst is rejected, and repeated
+// rejections while controls are allowed revoke them
+typedef struct {
+  uint16_t msgs;       // frames counted in the current half-window
+  uint16_t msgs_prev;  // frames counted in the previous half-window
+  uint16_t rejected;   // frames rejected in the current half-window
+  uint32_t ts_last;    // start of the current half-window
+} TxRateStatus;
+
+typedef struct {
+  const uint32_t addr;
+  const uint8_t bus;
+  const uint16_t frequency;  // nominal rate, Hz
+  const uint8_t burst;       // extra frames tolerated per window
+  TxRateStatus status;
+} TxRateCheck;
+
 // LionDriver TSR-408: an actuation message the SoC must keep sending while authority is granted. If no frame of it
 // reaches the TX hook for longer than timeout_us, the periodic safety task revokes authority.
 typedef struct {
@@ -227,6 +255,8 @@ typedef struct {
   uint8_t rx_timeout_periods;        // LionDriver TSR-401: if non-zero, an RX check lags after this many missed periods; 0 keeps max(10 periods, 1 s)
   TxArrivalCheck *tx_arrival_checks;  // LionDriver TSR-408: NULL / 0 for no supervision
   int tx_arrival_checks_len;
+  TxRateCheck *tx_rate_checks;       // LionDriver TSR-518: optional; IDs without a row are not rate-checked
+  int tx_rate_checks_len;
 } safety_config;
 
 typedef uint32_t (*get_checksum_t)(const CANPacket_t *msg);
@@ -292,6 +322,8 @@ extern int cruise_button_prev;
 extern bool safety_rx_checks_invalid;
 // LionDriver TSR-110: the car's EPS reports a fault and the safety mode refuses lateral actuation; reported to the host
 extern bool safety_eps_fault;
+// LionDriver TSR-518: controls were revoked because the SoC exceeded a TX rate budget; reported to the host
+extern bool safety_tx_rate_exceeded;
 
 // for safety modes with torque steering control
 extern int desired_torque_last;       // last desired steer torque
