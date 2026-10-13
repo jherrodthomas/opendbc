@@ -205,6 +205,52 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     self._reset_safety_hooks()
     self.assertFalse(self.safety.get_safety_tx_rate_exceeded())
 
+  def test_tx_rate_no_reengagement_while_excess_persists(self):
+    # SWSR-518 amendment (WP-W-03 ATC-20, RR-2026-009 F-34): after a revocation, a cruise rising edge does not grant
+    # authority again until one full 250 ms window has passed without a rejected frame
+    rows = {addr: make for addr, _, _, make in self._tx_rate_rows()}
+    if not rows:
+      raise unittest.SkipTest("reference build, non-SecOC")
+
+    def engage(t):
+      # a fresh cruise rising edge with every RX check valid at that moment
+      self.safety.set_timer(t)
+      self._rx_all_checked_msgs()
+      self._rx(self._pcm_status_msg(True))
+      return self.safety.get_controls_allowed()
+
+    self._reset_safety_hooks()
+    t = 1000000
+    self.assertTrue(engage(t))
+    last_reject = None
+    while self.safety.get_controls_allowed():  # STEERING_LKA at 2x its rate until revoked
+      t += 5000
+      self.safety.set_timer(t)
+      if not self._tx_rated(rows[0x2E4]()):
+        last_reject = t
+    self.assertTrue(self.safety.get_safety_tx_rate_exceeded())
+
+    # the flood goes on: every new engagement is refused
+    for _ in range(10):
+      t += 5000
+      self.safety.set_timer(t)
+      self.assertFalse(self._tx_rated(rows[0x2E4]()))
+      last_reject = t
+      self.assertFalse(engage(t))
+
+    # the flood stops: still refused within one window of the last rejected frame, granted after it
+    self.assertFalse(engage(last_reject + 249999))
+    self.assertTrue(engage(last_reject + 250000))
+    self.assertTrue(self.safety.get_safety_tx_rate_exceeded())  # the report stays latched until the mode changes
+
+    # the block only follows a revocation: rejections while authority was never granted do not block engagement
+    self._reset_safety_hooks()
+    t = 3000000
+    self.safety.set_timer(t)
+    for _ in range(40):
+      self._tx_rated(rows[0x2E4]())
+    self.assertTrue(engage(t + 1))
+
   def test_tx_rate_catch_up_after_stall(self):
     # after a host stall shorter than the heartbeat limit (0.3 s), the queued frames arrive at once: all pass (DN-01 T4)
     rows = {addr: make for addr, _, _, make in self._tx_rate_rows()}

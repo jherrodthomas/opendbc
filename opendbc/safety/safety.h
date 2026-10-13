@@ -255,6 +255,11 @@ static void tx_arrival_update(const CANPacket_t *msg) {
 // (DN-01 D-5): no upstream mode configures TX rate rows yet
 #define TX_RATE_WINDOW_US 250000U
 #define TX_RATE_REVOKE_REJECTED 3U
+// LionDriver SWSR-518 (WP-W-03 ATC-20, RR-2026-009 F-34): after a revocation, authority is not granted again until
+// one full window has passed without a rejected frame. Separate from safety_tx_rate_exceeded, which stays latched as
+// a report until the next safety mode change
+static bool tx_rate_engagement_blocked = false;
+static uint32_t tx_rate_last_reject_ts = 0U;
 static bool tx_rate_check(const CANPacket_t *msg) {
   bool allowed = true;
   for (int i = 0; i < current_safety_config.tx_rate_checks_len; i++) {
@@ -273,12 +278,14 @@ static bool tx_rate_check(const CANPacket_t *msg) {
       uint32_t budget = ((((uint32_t)check->frequency * 3U) + 9U) / 10U) + 1U + (uint32_t)check->burst;
       if (((uint32_t)check->status.msgs + (uint32_t)check->status.msgs_prev) >= budget) {
         allowed = false;
+        tx_rate_last_reject_ts = ts;
         if (check->status.rejected < 0xFFFFU) {
           check->status.rejected += 1U;
         }
         if (controls_allowed && (check->status.rejected >= TX_RATE_REVOKE_REJECTED)) {
           controls_allowed = false;
           safety_tx_rate_exceeded = true;
+          tx_rate_engagement_blocked = true;
         }
       } else {
         check->status.msgs += 1U;
@@ -401,7 +408,8 @@ static bool rx_check_lagging(int i, uint32_t ts) {
 }
 
 // LionDriver TSR-306: for modes with rx_timeout_periods, controls are only granted when every RX check is valid
-// at that moment, including a timeout that the periodic safety_tick has not evaluated yet
+// at that moment, including a timeout that the periodic safety_tick has not evaluated yet.
+// LionDriver SWSR-518 (ATC-20): nor while a TX-rate revocation is still blocking engagement
 static bool rx_checks_allow_engagement(void) {
   bool allow = true;
   if (current_safety_config.rx_timeout_periods > 0U) {
@@ -412,6 +420,15 @@ static bool rx_checks_allow_engagement(void) {
       }
     }
   }
+#ifdef LIONDRIVER_REFERENCE
+  if (tx_rate_engagement_blocked) {
+    if (safety_get_ts_elapsed(microsecond_timer_get(), tx_rate_last_reject_ts) >= TX_RATE_WINDOW_US) {
+      tx_rate_engagement_blocked = false;
+    } else {
+      allow = false;
+    }
+  }
+#endif
   return allow;
 }
 
@@ -580,6 +597,8 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   controls_allowed = false;
 #ifdef LIONDRIVER_REFERENCE
   tx_arrival_controls_allowed_prev = false;
+  tx_rate_engagement_blocked = false;
+  tx_rate_last_reject_ts = 0U;
 #endif
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
