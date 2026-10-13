@@ -176,6 +176,31 @@ static bool toyota_get_quality_flag_valid(const CANPacket_t *msg) {
   return valid;
 }
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver DFA DFI-19 / DM-11 (FSR-017, FSR-027): the cluster's lane-assist indication must not claim assist
+// while the panda has not granted authority. LKAS_HUD.BARRIERS is what the host sets while engaged
+// (opendbc/car/toyota/toyotacan.py create_ui_command). After authority is withdrawn the host needs a few
+// cycles to clear it (5 Hz HUD, on-change frames), so it stays accepted for TOYOTA_HUD_AUTHORITY_GRACE_US.
+#define TOYOTA_HUD_AUTHORITY_GRACE_US 1000000U
+static uint32_t toyota_authority_ts = 0U;
+static bool toyota_authority_seen = false;
+
+static void toyota_authority_update(void) {
+  if (controls_allowed) {
+    toyota_authority_ts = microsecond_timer_get();
+    toyota_authority_seen = true;
+  }
+}
+
+static bool toyota_hud_assist_allowed(void) {
+  bool allowed = controls_allowed;
+  if (!allowed && toyota_authority_seen) {
+    allowed = safety_get_ts_elapsed(microsecond_timer_get(), toyota_authority_ts) <= TOYOTA_HUD_AUTHORITY_GRACE_US;
+  }
+  return allowed;
+}
+#endif
+
 static void toyota_rx_hook(const CANPacket_t *msg) {
   // get eps motor torque (0.66 factor in dbc)
   if (msg_matches(msg, 0x260U, 0U)) {
@@ -249,6 +274,10 @@ static void toyota_rx_hook(const CANPacket_t *msg) {
     }
 #endif
   }
+
+#ifdef LIONDRIVER_REFERENCE
+  toyota_authority_update();
+#endif
 
   // sample speed
   if (msg_matches(msg, 0xaaU, 0U)) {
@@ -445,6 +474,16 @@ static bool toyota_tx_hook(const CANPacket_t *msg) {
   }
 
   // UDS: Only tester present ("\x0F\x02\x3E\x00\x00\x00\x00\x00") allowed on diagnostics address
+#ifdef LIONDRIVER_REFERENCE
+  // LKAS_HUD: no assist-active indication without authority (DM-11)
+  if (msg_matches(msg, 0x412U, 0U)) {
+    int barriers = msg->data[0] & 0x3U;  // LKAS_HUD.BARRIERS, bits 1..0 of byte 0
+    if ((barriers != 0) && !toyota_hud_assist_allowed()) {
+      tx = false;
+    }
+  }
+#endif
+
   if (msg->addr == 0x750U) {
     // this address is sub-addressed. only allow tester present to radar (0xF)
     bool invalid_uds_msg = GET_BYTES_64_LE(msg, 0, 8) != 0x00000000003E020FULL;
@@ -491,6 +530,8 @@ static safety_config toyota_init(uint16_t param) {
   toyota_lta = GET_FLAG(param, TOYOTA_PARAM_LTA);
   toyota_dbc_eps_torque_factor = param & TOYOTA_EPS_FACTOR;
 #ifdef LIONDRIVER_REFERENCE
+  toyota_authority_ts = 0U;
+  toyota_authority_seen = false;
   toyota_main_on = false;
   toyota_cruise_main_mismatch = false;
   toyota_cruise_main_mismatch_start = 0U;

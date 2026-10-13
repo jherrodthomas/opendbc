@@ -306,6 +306,50 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
   def _eps_status_msg(self, lka_state: int):
     return self.packer.make_can_msg_safety("EPS_STATUS", 0, {"LKA_STATE": lka_state})
 
+  def _lkas_hud_msg(self, barriers: int):
+    return self.packer.make_can_msg_safety("LKAS_HUD", 0, {"BARRIERS": barriers})
+
+  def test_lkas_hud_assist_needs_authority(self):
+    # LionDriver DFA DFI-19 / DM-11: in the reference build, an LKAS_HUD that shows assist (BARRIERS != 0) is refused
+    # unless authority is granted, or was granted within the last second (the host clears it a few frames later)
+    if not LIONDRIVER_REFERENCE:
+      raise unittest.SkipTest("reference build only")
+    grace_us = 1000000
+
+    # never granted since the safety mode was set
+    self._reset_safety_hooks()
+    self.safety.set_timer(5000000)
+    self.assertTrue(self._tx(self._lkas_hud_msg(0)))
+    for barriers in (1, 2, 3):
+      self.assertFalse(self._tx(self._lkas_hud_msg(barriers)), barriers)
+
+    # granted: accepted, also before an RX frame has stamped the time
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._lkas_hud_msg(1)))
+    t0 = 6000000
+    self.safety.set_timer(t0)
+    self.assertTrue(self._rx(self._speed_msg(0)))
+
+    # withdrawn: accepted within the grace time after the last RX frame with authority, then refused
+    self.safety.set_controls_allowed(False)
+    self.safety.set_timer(t0 + grace_us)
+    self.assertTrue(self._tx(self._lkas_hud_msg(1)))
+    self.safety.set_timer(t0 + grace_us + 1)
+    self.assertFalse(self._tx(self._lkas_hud_msg(1)))
+    self.assertTrue(self._tx(self._lkas_hud_msg(0)))
+
+    # RX frames without authority do not extend the grace time
+    self.assertTrue(self._rx(self._speed_msg(0)))
+    self.assertFalse(self._tx(self._lkas_hud_msg(1)))
+
+    # a safety mode change forgets the last grant, also within the grace time
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._rx(self._speed_msg(0)))
+    self._reset_safety_hooks()
+    self.assertFalse(self._tx(self._lkas_hud_msg(1)))
+    self.safety.set_timer(grace_us // 2)
+    self.assertFalse(self._tx(self._lkas_hud_msg(1)))
+
   def test_eps_fault_blocks_lka(self):
     # LionDriver TSR-110: in the reference build, while EPS_STATUS.LKA_STATE is in the host's steering fault set,
     # STEERING_LKA frames with torque or a steer request are refused; zero frames still pass
