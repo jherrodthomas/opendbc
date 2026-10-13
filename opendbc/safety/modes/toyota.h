@@ -557,6 +557,18 @@ static safety_config toyota_init(uint16_t param) {
     };
     SET_TX_RATE_CHECKS(toyota_tx_rate_checks, ret);
   }
+  // LionDriver TSR-408: while authority is granted, STEERING_LKA (100 Hz) must arrive at least every 50 ms and, with
+  // openpilot longitudinal, ACC_CONTROL (33 Hz) at least every 100 ms; otherwise the safety task revokes authority.
+  // A stalled control loop on the SoC (controlsd, card or the pandad send thread) stops these frames. LKA torque
+  // control without SecOC only: the reference configuration
+  if (!toyota_secoc && !toyota_lta) {
+    static TxArrivalCheck toyota_tx_arrival_checks[] = {
+      {.addr = 0x2E4U, .bus = 0U, .timeout_us = 50000U, .last_ts = 0U},
+      {.addr = 0x343U, .bus = 0U, .timeout_us = 100000U, .last_ts = 0U},
+    };
+    ret.tx_arrival_checks = toyota_tx_arrival_checks;
+    ret.tx_arrival_checks_len = toyota_stock_longitudinal ? 1 : 2;
+  }
 #endif
 
   return ret;
