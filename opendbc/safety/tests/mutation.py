@@ -18,6 +18,9 @@ import tree_sitter as ts
 
 
 ROOT = Path(__file__).resolve().parents[3]
+# LionDriver reference build: mutate and test the variant that the panda reference firmware compiles
+# (LIONDRIVER_REFERENCE=1, the same switch libsafety_py uses), so reference-only code is mutated too
+VARIANT_FLAGS = ["-DLIONDRIVER_REFERENCE"] if os.environ.get("LIONDRIVER_REFERENCE") == "1" else []
 SAFETY_DIR = ROOT / "opendbc" / "safety"
 SAFETY_TESTS_DIR = ROOT / "opendbc" / "safety" / "tests"
 SAFETY_C_REL = Path("opendbc/safety/tests/libsafety/safety.c")
@@ -151,7 +154,7 @@ def _prepare_for_parsing(txt):
 
 def enumerate_sites(input_source, preprocessed_file):
   subprocess.run([
-    "cc", "-E", "-std=gnu11", "-nostdlib", "-fno-builtin", "-DALLOW_DEBUG",
+    "cc", "-E", "-std=gnu11", "-nostdlib", "-fno-builtin", "-DALLOW_DEBUG", *VARIANT_FLAGS,
     f"-I{ROOT}", f"-I{ROOT / 'opendbc/safety/board'}",
     str(input_source), "-o", str(preprocessed_file),
   ], cwd=ROOT, capture_output=True, check=True)
@@ -461,7 +464,7 @@ def compile_mutated_library(preprocessed_source, sites, output_so):
 
   subprocess.run([
     "cc", "-shared", "-fPIC", "-w", "-fno-builtin", "-std=gnu11",
-    "-g0", "-O0", "-DALLOW_DEBUG",
+    "-g0", "-O0", "-DALLOW_DEBUG", *VARIANT_FLAGS,
     str(mutation_source), "-o", str(output_so),
   ], cwd=ROOT, check=True)
 
