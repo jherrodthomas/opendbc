@@ -439,6 +439,30 @@ static bool tx_arrival_ok(uint32_t ts) {
 }
 #endif
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver (WP-A-05 LS-06, OI-9): a PCM cruise rising edge alone no longer grants authority. It opens a window in which
+// authority is granted once the host heartbeat reports openpilot engaged (heartbeat_engaged), so the panda does not
+// grant authority that openpilot has not taken (for up to 3 s, until the 1 Hz engaged-mismatch check, before this change).
+// The grant is made only here and in the safety task, never from the host command handler. Without the heartbeat flag
+// within the window, this cruise engagement grants nothing; the next rising edge opens a new window.
+#define PCM_ENGAGE_WINDOW_US 1000000U
+static bool pcm_engage_pending = false;
+static uint32_t pcm_engage_ts = 0U;
+
+static void pcm_engage_check(uint32_t ts) {
+  if (pcm_engage_pending) {
+    if (safety_get_ts_elapsed(ts, pcm_engage_ts) > PCM_ENGAGE_WINDOW_US) {
+      pcm_engage_pending = false;
+    } else if (heartbeat_engaged) {
+      controls_allowed = rx_checks_allow_engagement();
+      pcm_engage_pending = false;
+    } else {
+      // keep waiting for the heartbeat
+    }
+  }
+}
+#endif
+
 // periodic safety function called by main (LionDriver: 100 Hz safety task). Now just a check for lagging safety messages
 void safety_tick(void) {
   bool rx_checks_invalid = false;
@@ -456,6 +480,10 @@ void safety_tick(void) {
   }
 
 #ifdef LIONDRIVER_REFERENCE
+  if (rx_checks_invalid) {
+    pcm_engage_pending = false;
+  }
+  pcm_engage_check(ts);
   if (!tx_arrival_ok(ts)) {
     controls_allowed = false;
   }
@@ -475,6 +503,9 @@ static void generic_rx_checks(void) {
   // exit controls on rising edge of brake press
   if (brake_pressed && (!brake_pressed_prev || vehicle_moving)) {
     controls_allowed = false;
+#ifdef LIONDRIVER_REFERENCE
+    pcm_engage_pending = false;
+#endif
   }
   brake_pressed_prev = brake_pressed;
 
@@ -580,6 +611,8 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   controls_allowed = false;
 #ifdef LIONDRIVER_REFERENCE
   tx_arrival_controls_allowed_prev = false;
+  pcm_engage_pending = false;
+  pcm_engage_ts = 0U;
 #endif
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
@@ -651,9 +684,20 @@ void pcm_cruise_check(bool cruise_engaged) {
   // Enter controls on rising edge of stock ACC, exit controls if stock ACC disengages
   if (!cruise_engaged) {
     controls_allowed = false;
+#ifdef LIONDRIVER_REFERENCE
+    pcm_engage_pending = false;
+#endif
   }
   if (cruise_engaged && !cruise_engaged_prev) {
+#ifdef LIONDRIVER_REFERENCE
+    // LionDriver (LS-06): the rising edge opens the engagement window; the grant needs heartbeat_engaged
+    uint32_t ts = microsecond_timer_get();
+    pcm_engage_pending = rx_checks_allow_engagement();
+    pcm_engage_ts = ts;
+    pcm_engage_check(ts);
+#else
     controls_allowed = rx_checks_allow_engagement();
+#endif
   }
   cruise_engaged_prev = cruise_engaged;
 }
