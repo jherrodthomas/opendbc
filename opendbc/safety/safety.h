@@ -408,9 +408,9 @@ static bool rx_check_lagging(int i, uint32_t ts) {
 }
 
 #ifdef LIONDRIVER_REFERENCE
-// LionDriver SWSR-301/SWSR-311 (B2B candidate BB-C-01): a safety mode change resets the cruise edge memory to
-// "not yet seen disengaged", so a CRUISE_ACTIVE held through the change is not taken for a new rising edge. Authority
-// is granted only on a rising edge after CRUISE_ACTIVE = 0 has been received in the current safety mode
+// LionDriver SWSR-301/SWSR-311 (ATC-26; back-to-back finding B2B-06): a safety mode change resets the cruise edge
+// memory to "not yet seen disengaged", so a CRUISE_ACTIVE held through the change is not taken for a new rising edge.
+// Authority is granted only on a rising edge after CRUISE_ACTIVE = 0 has been received in the current safety mode
 static bool pcm_cruise_seen_disengaged = false;
 #endif
 
@@ -463,6 +463,30 @@ static bool tx_arrival_ok(uint32_t ts) {
 }
 #endif
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver (WP-A-05 LS-06, OI-9): a PCM cruise rising edge alone no longer grants authority. It opens a window in which
+// authority is granted once the host heartbeat reports openpilot engaged (heartbeat_engaged), so the panda does not
+// grant authority that openpilot has not taken (for up to 3 s, until the 1 Hz engaged-mismatch check, before this change).
+// The grant is made only here and in the safety task, never from the host command handler. Without the heartbeat flag
+// within the window, this cruise engagement grants nothing; the next rising edge opens a new window.
+#define PCM_ENGAGE_WINDOW_US 1000000U
+static bool pcm_engage_pending = false;
+static uint32_t pcm_engage_ts = 0U;
+
+static void pcm_engage_check(uint32_t ts) {
+  if (pcm_engage_pending) {
+    if (safety_get_ts_elapsed(ts, pcm_engage_ts) > PCM_ENGAGE_WINDOW_US) {
+      pcm_engage_pending = false;
+    } else if (heartbeat_engaged) {
+      controls_allowed = rx_checks_allow_engagement();
+      pcm_engage_pending = false;
+    } else {
+      // keep waiting for the heartbeat
+    }
+  }
+}
+#endif
+
 // periodic safety function called by main (LionDriver: 100 Hz safety task). Now just a check for lagging safety messages
 void safety_tick(void) {
   bool rx_checks_invalid = false;
@@ -480,6 +504,10 @@ void safety_tick(void) {
   }
 
 #ifdef LIONDRIVER_REFERENCE
+  if (rx_checks_invalid) {
+    pcm_engage_pending = false;
+  }
+  pcm_engage_check(ts);
   if (!tx_arrival_ok(ts)) {
     controls_allowed = false;
   }
@@ -499,6 +527,9 @@ static void generic_rx_checks(void) {
   // exit controls on rising edge of brake press
   if (brake_pressed && (!brake_pressed_prev || vehicle_moving)) {
     controls_allowed = false;
+#ifdef LIONDRIVER_REFERENCE
+    pcm_engage_pending = false;
+#endif
   }
   brake_pressed_prev = brake_pressed;
 
@@ -607,6 +638,8 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   tx_rate_engagement_blocked = false;
   tx_rate_last_reject_ts = 0U;
   pcm_cruise_seen_disengaged = false;
+  pcm_engage_pending = false;
+  pcm_engage_ts = 0U;
 #endif
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
@@ -679,15 +712,22 @@ void pcm_cruise_check(bool cruise_engaged) {
   if (!cruise_engaged) {
     controls_allowed = false;
 #ifdef LIONDRIVER_REFERENCE
+    pcm_engage_pending = false;
     pcm_cruise_seen_disengaged = true;
 #endif
   }
   if (cruise_engaged && !cruise_engaged_prev) {
-    bool engagement_allowed = rx_checks_allow_engagement();
 #ifdef LIONDRIVER_REFERENCE
-    engagement_allowed = engagement_allowed && pcm_cruise_seen_disengaged;
+    // LionDriver (LS-06): the rising edge opens the engagement window; the grant needs heartbeat_engaged.
+    // LionDriver SWSR-311 (ATC-26): only an edge after CRUISE_ACTIVE = 0 in this safety mode opens it
+    uint32_t ts = microsecond_timer_get();
+    bool engagement_allowed = rx_checks_allow_engagement();
+    pcm_engage_pending = engagement_allowed && pcm_cruise_seen_disengaged;
+    pcm_engage_ts = ts;
+    pcm_engage_check(ts);
+#else
+    controls_allowed = rx_checks_allow_engagement();
 #endif
-    controls_allowed = engagement_allowed;
   }
   cruise_engaged_prev = cruise_engaged;
 }

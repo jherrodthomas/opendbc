@@ -213,8 +213,15 @@ bool get_honda_fwd_brake(void){
   return honda_fwd_brake;
 }
 
+// LionDriver (LS-06): the heartbeat's engaged flag, which the reference build needs before a PCM edge grants authority
+void set_heartbeat_engaged(bool c){
+  heartbeat_engaged = c;
+}
+
 void init_tests(void){
   safety_mode_cnt = 2U;  // avoid ignoring relay_malfunction logic
+  // the host reports openpilot engaged unless a test says otherwise (LionDriver reference build, LS-06)
+  heartbeat_engaged = true;
   alternative_experience = 0;
   set_timer(0);
   ts_steer_req_mismatch_last = 0;

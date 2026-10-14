@@ -252,8 +252,8 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     self.assertTrue(engage(t + 1))
 
   def test_no_grant_after_mode_set_without_new_engagement(self):
-    # LionDriver SWSR-301/SWSR-311 (B2B candidate BB-C-01): a safety mode set while CRUISE_ACTIVE stays 1 must not
-    # let the next PCM_CRUISE frame grant authority; a new engagement (cruise seen off, then on) is needed
+    # LionDriver SWSR-301/SWSR-311 (ATC-26, back-to-back finding B2B-06): a safety mode set while CRUISE_ACTIVE stays 1
+    # must not let the next PCM_CRUISE frame grant authority; a new engagement (cruise seen off, then on) is needed
     if not LIONDRIVER_REFERENCE or self.SAFETY_PARAM & (ToyotaSafetyFlags.SECOC | ToyotaSafetyFlags.ALT_BRAKE):
       raise unittest.SkipTest("reference build, non-SecOC, BRAKE_MODULE 0x226")
     self.safety.set_timer(1000000)
@@ -519,6 +519,81 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     self._rx(self._pcm_status_msg(False))
     self._rx(self._pcm_status_msg(True))
     self.assertFalse(self.safety.get_controls_allowed())
+
+  def _pcm_edge(self, t_us):
+    self.safety.set_timer(t_us)
+    self._rx_all_checked_msgs()
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._pcm_status_msg(True))
+
+  def _refresh_rx_cruise_active(self, t_us):
+    # every RX-checked message again, with PCM_CRUISE kept active (no new rising edge, gas released)
+    self.safety.set_timer(t_us)
+    pcm_addr = self._pcm_status_msg(True)[0].addr
+    for msg in (self._speed_msg(0), self._user_brake_msg(False), self._pcm_status_msg(True), self._user_gas_msg(False),
+                self._torque_meas_msg(0), *[m for m, _ in self._reference_rx_check_msgs()]):
+      if msg[0].addr == pcm_addr:
+        msg = self.packer.make_can_msg_safety("PCM_CRUISE", 0, {"CRUISE_ACTIVE": 1, "GAS_RELEASED": 1})
+      self.assertTrue(self._rx(msg))
+
+  def test_pcm_edge_needs_heartbeat_engaged(self):
+    # LionDriver (WP-A-05 LS-06): in the reference build a PCM rising edge grants authority only once the heartbeat
+    # reports openpilot engaged, within 1 s of the edge; the grant is made in the safety task
+    if not LIONDRIVER_REFERENCE:
+      raise unittest.SkipTest("reference build only")
+    window_us = 1000000
+    for wait_us, engages in ((0, True), (window_us // 2, True), (window_us, True), (window_us + 10000, False)):
+      with self.subTest(wait_us=wait_us):
+        self._reset_safety_hooks()
+        self.safety.set_heartbeat_engaged(False)
+        self._pcm_edge(0)
+        self.assertFalse(self.safety.get_controls_allowed())
+        self.safety.safety_tick()
+        self.assertFalse(self.safety.get_controls_allowed())
+        self._refresh_rx_cruise_active(wait_us)
+        self.safety.set_heartbeat_engaged(True)
+        self.safety.safety_tick()
+        self.assertEqual(engages, self.safety.get_controls_allowed())
+
+    # an expired window grants nothing later; the next rising edge opens a new one
+    self.safety.safety_tick()
+    self.assertFalse(self.safety.get_controls_allowed())
+    self._pcm_edge(window_us * 3)
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_pcm_edge_with_heartbeat_engaged_grants_at_once(self):
+    if not LIONDRIVER_REFERENCE:
+      raise unittest.SkipTest("reference build only")
+    self.safety.set_heartbeat_engaged(True)
+    self._pcm_edge(0)
+    self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_pending_engagement_cancelled(self):
+    # cruise off, a brake press or a failed RX check during the window cancels it
+    if not LIONDRIVER_REFERENCE:
+      raise unittest.SkipTest("reference build only")
+    cancels = {
+      "cruise off": lambda: self._rx(self._pcm_status_msg(False)),
+      "brake": lambda: self._rx(self._user_brake_msg(True)),
+      "rx timeout": lambda: self.safety.set_timer(500000),
+    }
+    for name, cancel in cancels.items():
+      with self.subTest(cancel=name):
+        self._reset_safety_hooks()
+        self.safety.set_heartbeat_engaged(False)
+        self._pcm_edge(0)
+        cancel()
+        self.safety.safety_tick()
+        self.safety.set_heartbeat_engaged(True)
+        if name == "rx timeout":
+          self.safety.set_timer(500000)
+        elif name == "cruise off":
+          self.safety.set_timer(100000)
+          self._rx_all_checked_msgs()  # cruise stays off
+        else:
+          self._refresh_rx_cruise_active(100000)
+        self.safety.safety_tick()
+        self.assertFalse(self.safety.get_controls_allowed())
 
   def _tx_arrival_msgs(self):
     # LionDriver TSR-408: actuation frames the reference build requires from the SoC while authority is granted, with
