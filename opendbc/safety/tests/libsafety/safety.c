@@ -70,6 +70,18 @@ void reset_tx_rate_state(void){
   }
 }
 
+// LionDriver TSR-518: test helper (libsafety only). Rejected-frame count of the TX rate check of addr in its current
+// window, or -1 if addr has no check
+int get_tx_rate_rejected(int addr){
+  int rejected = -1;
+  for (int j = 0; j < current_safety_config.tx_rate_checks_len; j++) {
+    if (current_safety_config.tx_rate_checks[j].addr == (uint32_t)addr) {
+      rejected = (int)current_safety_config.tx_rate_checks[j].status.rejected;
+    }
+  }
+  return rejected;
+}
+
 bool get_gas_pressed_prev(void){
   return gas_pressed_prev;
 }

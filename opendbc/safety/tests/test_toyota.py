@@ -125,6 +125,17 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
   def _tx_rate_budget(freq, burst):
     return -(-freq * 3 // 10) + 1 + burst
 
+  def test_angle_meas_ignores_initializing_frames(self):
+    # STEER_TORQUE_SENSOR with STEER_ANGLE_INITIALIZING set must not update angle_meas (coverage gap CJ-16)
+    self._reset_safety_hooks()
+    self._rx(self._angle_meas_msg(10.0))
+    before = (self.safety.get_angle_meas_min(), self.safety.get_angle_meas_max())
+    for _ in range(6):
+      self._rx(self._angle_meas_msg(50.0, steer_angle_initializing=True))
+    self.assertEqual((self.safety.get_angle_meas_min(), self.safety.get_angle_meas_max()), before)
+    self._rx(self._angle_meas_msg(50.0))
+    self.assertGreater(self.safety.get_angle_meas_max(), before[1])
+
   def test_tx_rate_every_whitelisted_id_has_a_budget(self):
     # every TX-whitelisted ID of the reference build is rate-checked (DN-01 T6)
     rows = self._tx_rate_rows()
@@ -179,6 +190,22 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
       for addr in sends:
         self.assertTrue(self._tx_rated(rows[addr]()), (frame, hex(addr)))
     self.assertTrue(self.safety.get_controls_allowed())
+
+  def test_tx_rate_rejected_count_saturates(self):
+    # the per-ID rejection count stops at 0xFFFF instead of wrapping to 0 within one window (DN-01; coverage gap CJ-28)
+    rows = {addr: make for addr, _, _, make in self._tx_rate_rows()}
+    if not rows:
+      raise unittest.SkipTest("reference build, non-SecOC")
+    self._reset_safety_hooks()
+    self.safety.set_timer(1000000)
+    make = rows[0x2E4]
+    budget = self._tx_rate_budget(100, 5)
+    for _ in range(budget):
+      self.assertTrue(self._tx_rated(make()))
+    for _ in range(0xFFFF + 3):
+      self.assertFalse(self._tx_rated(make()))
+    self.assertEqual(self.safety.get_tx_rate_rejected(0x2E4), 0xFFFF)
+    self.assertEqual(self.safety.get_tx_rate_rejected(0x7FF), -1)
 
   def test_tx_rate_persistent_excess_revokes(self):
     # STEERING_LKA at 2x its rate: the third rejected frame in a half-window revokes authority and is reported (DN-01 T3)
