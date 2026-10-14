@@ -251,6 +251,31 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
       self._tx_rated(rows[0x2E4]())
     self.assertTrue(engage(t + 1))
 
+  def test_no_grant_after_mode_set_without_new_engagement(self):
+    # LionDriver SWSR-301/SWSR-311 (B2B candidate BB-C-01): a safety mode set while CRUISE_ACTIVE stays 1 must not
+    # let the next PCM_CRUISE frame grant authority; a new engagement (cruise seen off, then on) is needed
+    if not LIONDRIVER_REFERENCE or self.SAFETY_PARAM & (ToyotaSafetyFlags.SECOC | ToyotaSafetyFlags.ALT_BRAKE):
+      raise unittest.SkipTest("reference build, non-SecOC, BRAKE_MODULE 0x226")
+    self.safety.set_timer(1000000)
+    self._rx_all_checked_msgs()
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+
+    self._reset_safety_hooks()
+    self.assertFalse(self.safety.get_controls_allowed())
+    # every other RX check is received again, then PCM_CRUISE with CRUISE_ACTIVE still 1
+    for msg in (self._speed_msg(0), self._user_brake_msg(False), self._torque_meas_msg(0),
+                *[m for m, _ in self._reference_rx_check_msgs()]):
+      self.assertTrue(self._rx(msg))
+    for _ in range(3):
+      self._rx(self._pcm_status_msg(True))
+      self.assertFalse(self.safety.get_controls_allowed())
+
+    # a new engagement grants authority
+    self._rx(self._pcm_status_msg(False))
+    self._rx(self._pcm_status_msg(True))
+    self.assertTrue(self.safety.get_controls_allowed())
+
   def test_tx_rate_catch_up_after_stall(self):
     # after a host stall shorter than the heartbeat limit (0.3 s), the queued frames arrive at once: all pass (DN-01 T4)
     rows = {addr: make for addr, _, _, make in self._tx_rate_rows()}

@@ -131,6 +131,8 @@ class TestFordSafetyBase(common.CarSafetyTest):
     return self.packer.make_can_msg_safety("EngBrakeData", 0, values)
 
   def test_enable_control_allowed_from_queue_assist(self):
+    # LionDriver SWSR-301 (reference build): a rising edge counts only after cruise was seen off in this safety mode
+    self._rx(self._pcm_status_msg(False))
     msg = self.packer.make_can_msg_safety("EngBrakeData", 0, {"BpedDrvAppl_D_Actl": 1, "CcStat_D_Actl": 4})
     self.assertTrue(self._rx(msg))
     self.assertTrue(self.safety.get_controls_allowed())

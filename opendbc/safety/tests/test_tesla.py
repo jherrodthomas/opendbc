@@ -219,6 +219,8 @@ class TestTeslaSafetyBase(common.CarSafetyTest, common.AngleSteeringSafetyTest, 
 
   def test_autopark_summon_while_enabled(self):
     # We should not respect Autopark that activates while controls are allowed
+    # (LionDriver SWSR-301, reference build: a rising edge counts only after cruise was seen off in this safety mode)
+    self._rx(self._pcm_status_msg(False, 0))
     self._rx(self._pcm_status_msg(True, 0))
 
     self._rx(self._pcm_status_msg(True, self.autopark_states["SELFPARK_STARTED"]))

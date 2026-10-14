@@ -407,6 +407,13 @@ static bool rx_check_lagging(int i, uint32_t ts) {
   return elapsed_time > lag_threshold;
 }
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver SWSR-301/SWSR-311 (B2B candidate BB-C-01): a safety mode change resets the cruise edge memory to
+// "not yet seen disengaged", so a CRUISE_ACTIVE held through the change is not taken for a new rising edge. Authority
+// is granted only on a rising edge after CRUISE_ACTIVE = 0 has been received in the current safety mode
+static bool pcm_cruise_seen_disengaged = false;
+#endif
+
 // LionDriver TSR-306: for modes with rx_timeout_periods, controls are only granted when every RX check is valid
 // at that moment, including a timeout that the periodic safety_tick has not evaluated yet.
 // LionDriver SWSR-518 (ATC-20): nor while a TX-rate revocation is still blocking engagement
@@ -599,6 +606,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   tx_arrival_controls_allowed_prev = false;
   tx_rate_engagement_blocked = false;
   tx_rate_last_reject_ts = 0U;
+  pcm_cruise_seen_disengaged = false;
 #endif
   relay_malfunction_reset();
   safety_rx_checks_invalid = false;
@@ -670,9 +678,16 @@ void pcm_cruise_check(bool cruise_engaged) {
   // Enter controls on rising edge of stock ACC, exit controls if stock ACC disengages
   if (!cruise_engaged) {
     controls_allowed = false;
+#ifdef LIONDRIVER_REFERENCE
+    pcm_cruise_seen_disengaged = true;
+#endif
   }
   if (cruise_engaged && !cruise_engaged_prev) {
-    controls_allowed = rx_checks_allow_engagement();
+    bool engagement_allowed = rx_checks_allow_engagement();
+#ifdef LIONDRIVER_REFERENCE
+    engagement_allowed = engagement_allowed && pcm_cruise_seen_disengaged;
+#endif
+    controls_allowed = engagement_allowed;
   }
   cruise_engaged_prev = cruise_engaged;
 }
