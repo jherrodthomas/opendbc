@@ -132,13 +132,15 @@ static void toyota_cruise_main_check(bool from_pcm_cruise) {
     toyota_cruise_main_mismatch = true;
     toyota_cruise_main_mismatch_start = microsecond_timer_get();
     if (from_pcm_cruise) {
-      // cruise became active while main is off: never a valid engagement
+      // cruise became active while main is off: never a valid engagement, also not later through the window (SM-F1)
       controls_allowed = false;
+      pcm_engage_cancel();
     }
   } else {
     uint32_t elapsed = safety_get_ts_elapsed(microsecond_timer_get(), toyota_cruise_main_mismatch_start);
     if (elapsed > TOYOTA_CRUISE_MAIN_TOLERANCE_US) {
       controls_allowed = false;
+      pcm_engage_cancel();
     }
   }
 }

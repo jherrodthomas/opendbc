@@ -485,6 +485,12 @@ static void pcm_engage_check(uint32_t ts) {
     }
   }
 }
+
+// LionDriver SWSR-405(c) (finding SM-F1): a mode that refuses the cruise edge it has just seen (Toyota: CRUISE_ACTIVE
+// becoming 1 while MAIN_ON = 0) closes the window that edge opened, so a later heartbeat-engaged flag cannot grant
+void pcm_engage_cancel(void) {
+  pcm_engage_pending = false;
+}
 #endif
 
 // periodic safety function called by main (LionDriver: 100 Hz safety task). Now just a check for lagging safety messages
