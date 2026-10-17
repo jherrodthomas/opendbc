@@ -493,6 +493,17 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
           self.assertTrue(self.safety.safety_config_valid())
           self.assertTrue(self.safety.get_controls_allowed())
 
+    # before the first frame of a message the entry's message is not chosen yet (msg_seen), so a frame of another length
+    # is not compared: no RX fault, and engagement stays blocked because the message has not been received
+    for msg, _ in self._rx_check_msgs():
+      with self.subTest(addr=hex(msg[0].addr), case="not seen yet"):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self.assertTrue(self._rx(libsafety_py.make_CANPacket(msg[0].addr, 0, bytes(msg[0].data)[:7])))
+        self.assertFalse(self.safety.safety_config_valid())
+        self._pcm_edge(10000)
+        self.assertTrue(self.safety.get_controls_allowed())
+
     # a wrong length on another bus, or on an address that is not RX-checked, is not an RX fault
     self._reset_safety_hooks()
     self.safety.set_timer(0)
