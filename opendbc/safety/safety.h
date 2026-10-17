@@ -118,6 +118,12 @@ static bool is_msg_valid(RxCheck addr_list[], int index) {
       valid = false;
       controls_allowed = false;
     }
+#ifdef LIONDRIVER_REFERENCE
+    if (addr_list[index].status.wrong_length) {
+      valid = false;
+      controls_allowed = false;
+    }
+#endif
   }
   return valid;
 }
@@ -163,12 +169,43 @@ static void update_counter(RxCheck addr_list[], int index, uint8_t counter) {
   }
 }
 
+#ifdef LIONDRIVER_REFERENCE
+// LionDriver SWSR-402 (WP-W-03 ATC-25, back-to-back finding B2B-01): for modes with rx_timeout_periods, a frame with the
+// address and bus of an RX check but another length matches no entry, so upstream ignores it and only the timeout
+// catches it. Here it is an RX fault: the entry is invalid from that frame until the next frame of the right length.
+// Returns false for such a frame. Only an entry whose message is already chosen (msg_seen) is compared, so a frame of
+// an alternative message is never taken for a wrong length
+static bool rx_length_check(const CANPacket_t *msg, const safety_config *cfg, int index) {
+  bool length_ok = true;
+  if (cfg->rx_timeout_periods > 0U) {
+    if (index != -1) {
+      cfg->rx_checks[index].status.wrong_length = false;
+    } else {
+      for (int i = 0; i < cfg->rx_checks_len; i++) {
+        RxStatus *status = &cfg->rx_checks[i].status;
+        if (status->msg_seen) {
+          const CanMsgCheck *m = &cfg->rx_checks[i].msg[status->index];
+          if (msg_matches(msg, (uint32_t)m->addr, m->bus)) {
+            status->wrong_length = true;
+            length_ok = false;
+          }
+        }
+      }
+    }
+  }
+  return length_ok;
+}
+#endif
+
 static bool rx_msg_safety_check(const CANPacket_t *msg,
                                 const safety_config *cfg,
                                 const safety_hooks *safety_hooks) {
 
   int index = get_addr_check_index(msg, cfg->rx_checks, cfg->rx_checks_len);
   update_addr_timestamp(cfg->rx_checks, index);
+#ifdef LIONDRIVER_REFERENCE
+  bool length_ok = rx_length_check(msg, cfg, index);
+#endif
 
   if (index != -1) {
     // checksum check
@@ -195,7 +232,14 @@ static bool rx_msg_safety_check(const CANPacket_t *msg,
       cfg->rx_checks[index].status.valid_quality_flag = cfg->rx_checks[index].msg[cfg->rx_checks[index].status.index].ignore_quality_flag;
     }
   }
-  return is_msg_valid(cfg->rx_checks, index);
+  bool valid = is_msg_valid(cfg->rx_checks, index);
+#ifdef LIONDRIVER_REFERENCE
+  if (!length_ok) {
+    valid = false;
+    controls_allowed = false;
+  }
+#endif
+  return valid;
 }
 
 bool safety_rx_hook(const CANPacket_t *msg) {

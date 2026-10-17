@@ -456,6 +456,52 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     self.safety.safety_tick()
     self.assertTrue(self.safety.get_controls_allowed())
 
+  def test_wrong_length_is_rx_fault(self):
+    # LionDriver SWSR-402 (WP-W-03 ATC-25, back-to-back finding B2B-01): in the reference build, a frame with the address
+    # and bus of an RX check but another length is an RX fault: authority cleared at once, and no grant until a frame of
+    # the right length arrives. Upstream ignores the frame and only the RX timeout catches the message
+    for msg, _ in self._rx_check_msgs():
+      addr, dat = msg[0].addr, bytes(msg[0].data)[:8]
+      for length in (0, 6, 7):
+        with self.subTest(addr=hex(addr), length=length):
+          self._reset_safety_hooks()
+          self.safety.set_timer(0)
+          self._rx_all_checked_msgs()
+          self.safety.set_controls_allowed(True)
+          wrong = libsafety_py.make_CANPacket(addr, 0, dat[:length])
+          self.assertEqual(not LIONDRIVER_REFERENCE, self._rx(wrong))
+          self.assertEqual(not LIONDRIVER_REFERENCE, self.safety.get_controls_allowed())
+          self.assertEqual(not LIONDRIVER_REFERENCE, self.safety.safety_config_valid())
+          if not LIONDRIVER_REFERENCE:
+            continue
+
+          # the entry stays invalid: the safety task keeps authority off and a cruise edge does not grant
+          self.safety.set_timer(5000)
+          self.safety.safety_tick()
+          self.assertFalse(self.safety.get_controls_allowed())
+          if addr != self._pcm_status_msg(False)[0].addr:  # a PCM_CRUISE frame of the right length is itself the recovery
+            self.safety.set_timer(10000)
+            self._rx(self._pcm_status_msg(False))
+            self._rx(self._pcm_status_msg(True))
+            self.assertFalse(self.safety.get_controls_allowed())
+            self.safety.safety_tick()
+            self.assertFalse(self.safety.get_controls_allowed())
+
+          # a frame of the right length makes the entry valid again, and the next cruise edge grants
+          self._pcm_edge(20000)
+          self.safety.safety_tick()
+          self.assertTrue(self.safety.safety_config_valid())
+          self.assertTrue(self.safety.get_controls_allowed())
+
+    # a wrong length on another bus, or on an address that is not RX-checked, is not an RX fault
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx_all_checked_msgs()
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._rx(libsafety_py.make_CANPacket(self._speed_msg(0)[0].addr, 1, b"\x00" * 7)))
+    self.assertTrue(self._rx(libsafety_py.make_CANPacket(0x7FF, 0, b"\x00" * 7)))
+    self.assertTrue(self.safety.get_controls_allowed())
+
   def _eps_status_msg(self, lka_state: int):
     return self.packer.make_can_msg_safety("EPS_STATUS", 0, {"LKA_STATE": lka_state})
 

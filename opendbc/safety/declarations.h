@@ -211,6 +211,7 @@ typedef struct {
   uint8_t last_counter;              // last counter value
   uint32_t last_timestamp;           // micro-s
   bool lagging;                      // true if and only if the time between updates is excessive
+  bool wrong_length;                 // LionDriver SWSR-402 (ATC-25): the last frame of this address had another length
 } RxStatus;
 
 // params and flags about checksum, counter and frequency checks for each monitored address
