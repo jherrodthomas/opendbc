@@ -815,6 +815,52 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     self.safety.safety_tick()
     self.assertFalse(self.safety.get_controls_allowed())
 
+  def _tx_arrival_refused_msg(self, addr):
+    # a supervised actuation frame that the content checks refuse while authority is granted
+    if addr == 0x2E4:
+      return self._torque_cmd_msg(1600, steer_req=1)  # above the torque limit
+    return self._accel_msg_343(10)  # above the acceleration limit
+
+  def test_tx_arrival_counts_accepted_frames_only(self):
+    # LionDriver SWSR-408 (back-to-back finding B2B-05): only a frame the TX hook accepts counts as an arrival. A host
+    # that keeps sending a supervised message, but only frames refused for their content, loses authority after the
+    # timeout as if it had stopped sending
+    msgs = self._tx_arrival_msgs()
+    if not msgs:
+      raise unittest.SkipTest("reference build, LKA torque control without SecOC")
+    for msg, timeout_us in msgs:
+      addr = msg[0].addr
+      with self.subTest(addr=hex(addr)):
+        for elapsed_us, allowed in ((timeout_us, True), (timeout_us + 1, False)):
+          self._reset_safety_hooks()
+          self.safety.set_timer(0)
+          self._rx_only(cruise_engaged=False)
+          self._rx_tx_live()  # PCM cruise rising edge: authority granted
+          self.safety.safety_tick()
+          self.assertTrue(self.safety.get_controls_allowed())
+          for t in range(10000, elapsed_us, 10000):
+            self.safety.set_timer(t)
+            self._rx_tx_live(skip_tx_addr=addr)
+            self.assertFalse(self._tx(self._tx_arrival_refused_msg(addr)))
+            self.safety.safety_tick()
+            self.assertTrue(self.safety.get_controls_allowed(), t)
+          self.safety.set_timer(elapsed_us)
+          self._rx_tx_live(skip_tx_addr=addr)
+          self.assertFalse(self._tx(self._tx_arrival_refused_msg(addr)))
+          self.safety.safety_tick()
+          self.assertEqual(allowed, self.safety.get_controls_allowed())
+
+    # control: an accepted frame of the same message keeps authority
+    self._reset_safety_hooks()
+    self.safety.set_timer(0)
+    self._rx_only(cruise_engaged=False)
+    self._rx_tx_live()
+    for t in range(10000, 300001, 10000):
+      self.safety.set_timer(t)
+      self._rx_tx_live()
+      self.safety.safety_tick()
+    self.assertTrue(self.safety.get_controls_allowed())
+
   def test_tx_arrival_acc_control_only_with_openpilot_longitudinal(self):
     # LionDriver TSR-408: with stock longitudinal the SoC sends no ACC commands, so a missing ACC_CONTROL is tolerated;
     # STEERING_LKA keeps arriving
