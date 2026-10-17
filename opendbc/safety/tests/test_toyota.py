@@ -401,6 +401,61 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
     self._rx(self._pcm_status_msg(True))
     self.assertTrue(self.safety.get_controls_allowed())
 
+  def _refresh_rx_main_off(self, t_us):
+    # as _refresh_rx_cruise_active (CRUISE_ACTIVE held 1, no new edge), with PCM_CRUISE_2 MAIN_ON = 0
+    self.safety.set_timer(t_us)
+    pcm_addr = self._pcm_status_msg(True)[0].addr
+    for msg in (self._speed_msg(0), self._user_brake_msg(False), self._pcm_status_msg(True), self._user_gas_msg(False),
+                self._torque_meas_msg(0), self._eps_status_msg(5), self._pcm_cruise_2_msg(main_on=False)):
+      if msg[0].addr == pcm_addr:
+        msg = self.packer.make_can_msg_safety("PCM_CRUISE", 0, {"CRUISE_ACTIVE": 1, "GAS_RELEASED": 1})
+      self.assertTrue(self._rx(msg))
+
+  def test_main_off_closes_engagement_window(self):
+    # LionDriver SWSR-405(c), finding SM-F1: a cruise edge refused because MAIN_ON = 0 must not grant later through the
+    # LS-06 engagement window when the heartbeat reports engaged; nor may the window grant after main has been off for
+    # longer than the tolerance
+    if not self._reference_rx_check_msgs():
+      raise unittest.SkipTest("reference build, non-SecOC cars with PCM_CRUISE_2")
+    tolerance_us = 150000
+
+    # cruise becomes active while main is off, the heartbeat reports engaged 50 ms later
+    self._reset_safety_hooks()
+    self.safety.set_heartbeat_engaged(False)
+    self.safety.set_timer(0)
+    self._rx_all_checked_msgs()
+    self.assertTrue(self._rx(self._pcm_cruise_2_msg(main_on=False)))
+    self._rx(self._pcm_status_msg(True))
+    for t_us in (50000, 100000, 140000, 300000):
+      with self.subTest(case="edge with main off", t_us=t_us):
+        self._refresh_rx_main_off(t_us)
+        self.safety.set_heartbeat_engaged(True)
+        self.safety.safety_tick()
+        self.assertFalse(self.safety.get_controls_allowed())
+
+    # the window opens with main on, main goes off, the heartbeat reports engaged after the tolerance
+    self._reset_safety_hooks()
+    self.safety.set_heartbeat_engaged(False)
+    self._pcm_edge(0)
+    self.safety.safety_tick()
+    self.assertFalse(self.safety.get_controls_allowed())
+    for t_us in range(10000, 10000 + tolerance_us + 20000, 20000):
+      self._refresh_rx_main_off(t_us)
+      self.safety.safety_tick()
+    self.assertFalse(self.safety.get_controls_allowed())
+    self.safety.set_heartbeat_engaged(True)
+    self.safety.safety_tick()
+    self.assertFalse(self.safety.get_controls_allowed())
+
+    # control: the same edge with main on still opens the window, and the heartbeat grants
+    self._reset_safety_hooks()
+    self.safety.set_heartbeat_engaged(False)
+    self._pcm_edge(0)
+    self._refresh_rx_cruise_active(50000)
+    self.safety.set_heartbeat_engaged(True)
+    self.safety.safety_tick()
+    self.assertTrue(self.safety.get_controls_allowed())
+
   def _eps_status_msg(self, lka_state: int):
     return self.packer.make_can_msg_safety("EPS_STATUS", 0, {"LKA_STATE": lka_state})
 
