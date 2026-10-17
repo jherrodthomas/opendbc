@@ -285,7 +285,8 @@ static bool tx_msg_safety_check(const CANPacket_t *msg, const CanMsg msg_list[],
 }
 
 #ifdef LIONDRIVER_REFERENCE
-// LionDriver TSR-408: note the arrival of a supervised actuation message from the SoC, whatever its content
+// LionDriver TSR-408: note the arrival of a supervised actuation message from the SoC. SWSR-408 (back-to-back finding
+// B2B-05): only a frame the TX hook accepts counts, so frames refused for their content or rate do not keep authority
 static void tx_arrival_update(const CANPacket_t *msg) {
   for (int i = 0; i < current_safety_config.tx_arrival_checks_len; i++) {
     TxArrivalCheck *check = &current_safety_config.tx_arrival_checks[i];
@@ -346,12 +347,6 @@ bool safety_tx_hook(CANPacket_t *msg) {
   if ((current_safety_mode == SAFETY_ALLOUTPUT) || (current_safety_mode == SAFETY_ELM327)) {
     whitelisted = true;
   }
-#ifdef LIONDRIVER_REFERENCE
-  if (whitelisted) {
-    tx_arrival_update(msg);
-  }
-#endif
-
   bool safety_allowed = false;
 #ifdef LIONDRIVER_REFERENCE
   // LionDriver TSR-518: the rate check runs first, so a frame over budget does not update the mode's limit state
@@ -364,7 +359,13 @@ bool safety_tx_hook(CANPacket_t *msg) {
   }
 #endif
 
-  return !relay_malfunction && whitelisted && safety_allowed;
+  bool accepted = !relay_malfunction && whitelisted && safety_allowed;
+#ifdef LIONDRIVER_REFERENCE
+  if (accepted) {
+    tx_arrival_update(msg);
+  }
+#endif
+  return accepted;
 }
 
 static int get_fwd_bus(int bus_num) {
