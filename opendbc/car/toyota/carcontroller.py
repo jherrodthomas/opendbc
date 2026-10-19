@@ -21,6 +21,10 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 ACCEL_WINDUP_LIMIT = 4.0 * DT_CTRL * 3  # m/s^2 / frame
 ACCEL_WINDDOWN_LIMIT = -4.0 * DT_CTRL * 3  # m/s^2 / frame
 ACCEL_PID_UNWIND = 0.03 * DT_CTRL * 3  # m/s^2 / frame
+# LionDriver WP-W-02 OI-15: the limits above shape the request before the PID and pitch compensation, so they do not
+# bound the ACCEL_CMD sent. This limit applies to the final command and stays below the envelope's provisional
+# jerk bound j_up/j_down of 5 m/s^3 (WP-W-02 §2.5, DQ-081 A), with room above 4 m/s^3 for the PID and pitch terms.
+ACCEL_FINAL_RATE_LIMIT = 4.5 * DT_CTRL * 3  # m/s^2 / frame
 
 MAX_PITCH_COMPENSATION = 1.5  # m/s^2
 
@@ -248,6 +252,12 @@ class CarController(CarControllerBase):
           self.permit_braking = False
 
         pcm_accel_cmd = float(np.clip(pcm_accel_cmd, self.params.ACCEL_MIN, self.params.ACCEL_MAX))
+        if CC.longActive:
+          pcm_accel_cmd = rate_limit(pcm_accel_cmd, self.accel, -ACCEL_FINAL_RATE_LIMIT, ACCEL_FINAL_RATE_LIMIT)
+          # LionDriver TSR-713 (DQ-300 A): no positive request to the PCM from the first frame of a stock AEB event,
+          # whatever the rate limit, the PID or the pitch compensation would send
+          if CS.out.stockAeb:
+            pcm_accel_cmd = min(pcm_accel_cmd, 0.0)
 
         main_accel_cmd = 0. if self.CP.flags & ToyotaFlags.SECOC.value else pcm_accel_cmd
         can_sends.append(toyotacan.create_accel_command(self.packer, main_accel_cmd, pcm_cancel_cmd, self.permit_braking, self.standstill_req, lead,
