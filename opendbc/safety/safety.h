@@ -73,6 +73,7 @@ int cruise_button_prev = 0;
 bool safety_rx_checks_invalid = false;
 bool safety_eps_fault = false;
 bool safety_tx_rate_exceeded = false;
+bool safety_tx_arrival_revoked = false;
 
 // for safety modes with torque steering control
 int desired_torque_last = 0;       // last desired steer torque
@@ -559,7 +560,9 @@ void safety_tick(void) {
     pcm_engage_pending = false;
   }
   pcm_engage_check(ts);
-  if (!tx_arrival_ok(ts)) {
+  // TSR-516(b), DQ-404: true in the tick in which this check revokes granted authority, so the panda sounds its siren
+  safety_tx_arrival_revoked = !tx_arrival_ok(ts);
+  if (safety_tx_arrival_revoked) {
     controls_allowed = false;
   }
   tx_arrival_controls_allowed_prev = controls_allowed;
@@ -696,6 +699,7 @@ int set_safety_hooks(uint16_t mode, uint16_t param) {
   safety_rx_checks_invalid = false;
   safety_eps_fault = false;
   safety_tx_rate_exceeded = false;
+  safety_tx_arrival_revoked = false;
 
   current_safety_config = (safety_config){0};
 

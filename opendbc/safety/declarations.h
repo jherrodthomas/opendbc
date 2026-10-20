@@ -328,6 +328,8 @@ extern bool safety_rx_checks_invalid;
 extern bool safety_eps_fault;
 // LionDriver TSR-518: controls were revoked because the SoC exceeded a TX rate budget; reported to the host
 extern bool safety_tx_rate_exceeded;
+// LionDriver TSR-408 / TSR-516(b): the TX-arrival check revoked granted authority in the last safety_tick
+extern bool safety_tx_arrival_revoked;
 
 // for safety modes with torque steering control
 extern int desired_torque_last;       // last desired steer torque

@@ -779,10 +779,50 @@ class TestToyotaSafetyBase(common.CarSafetyTest, common.LongitudinalAccelSafetyT
             self._rx_tx_live(skip_tx_addr=msg[0].addr)
             self.safety.safety_tick()
             self.assertTrue(self.safety.get_controls_allowed(), t)
+            self.assertFalse(self.safety.get_safety_tx_arrival_revoked(), t)
           self.safety.set_timer(elapsed_us)
           self._rx_tx_live(skip_tx_addr=msg[0].addr)
           self.safety.safety_tick()
           self.assertEqual(allowed, self.safety.get_controls_allowed())
+          # TSR-516(b), DQ-404: the revocation is reported for the one tick in which it happens, for the panda siren
+          self.assertEqual(not allowed, self.safety.get_safety_tx_arrival_revoked())
+          if not allowed:
+            self.safety.set_timer(elapsed_us + 10000)
+            self._rx_tx_live(skip_tx_addr=msg[0].addr)
+            self.safety.safety_tick()
+            self.assertFalse(self.safety.get_safety_tx_arrival_revoked())
+
+  def test_tx_arrival_revoked_only_by_arrival_check(self):
+    # LionDriver TSR-516(b), DQ-404: a driver disengagement and an RX fault revoke authority without the report, so the
+    # panda stays silent for them; with authority not granted, missing frames are not reported either
+    msgs = self._tx_arrival_msgs()
+    if not msgs:
+      raise unittest.SkipTest("reference build, LKA torque control without SecOC")
+    for cause in ("brake", "cruise_off", "rx_fault", "not_granted"):
+      with self.subTest(cause=cause):
+        self._reset_safety_hooks()
+        self.safety.set_timer(0)
+        self._rx_only(cruise_engaged=False)
+        if cause != "not_granted":
+          self._rx_tx_live()  # PCM cruise rising edge: authority granted
+          self.safety.safety_tick()
+          self.assertTrue(self.safety.get_controls_allowed())
+        for t in range(10000, 2000000, 10000):  # 2 s of 10 ms safety task steps
+          self.safety.set_timer(t)
+          if cause == "brake":
+            self._rx_only()
+            self.assertTrue(self._rx(self._user_brake_msg(True)))
+          elif cause == "cruise_off":
+            self._rx_only(cruise_engaged=False)
+          elif cause == "rx_fault":
+            # the actuation frames keep arriving, the car's messages do not: the RX checks lag
+            for msg, _ in msgs:
+              self._tx(msg)
+          else:
+            self._rx_only(cruise_engaged=False)
+          self.safety.safety_tick()
+          self.assertFalse(self.safety.get_safety_tx_arrival_revoked(), t)
+        self.assertFalse(self.safety.get_controls_allowed())
 
   def test_tx_arrival_starts_at_grant(self):
     # LionDriver TSR-408: frames that stopped before authority was granted get the full timeout from the grant, and
