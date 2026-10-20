@@ -65,6 +65,10 @@ bool get_safety_tx_rate_exceeded(void){
   return safety_tx_rate_exceeded;
 }
 
+bool get_safety_tx_arrival_revoked(void){
+  return safety_tx_arrival_revoked;
+}
+
 // LionDriver TSR-518: test helper (libsafety only). Clears the TX rate windows, so that tests that send many frames at
 // one timer value check content limits only; the rate tests do not call it
 void reset_tx_rate_state(void){
