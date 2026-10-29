@@ -27,6 +27,7 @@ ACCEL_PID_UNWIND = 0.03 * DT_CTRL * 3  # m/s^2 / frame
 ACCEL_FINAL_RATE_LIMIT = 4.5 * DT_CTRL * 3  # m/s^2 / frame
 
 MAX_PITCH_COMPENSATION = 1.5  # m/s^2
+INACTIVE_ACCEL = 0.0  # m/s^2, the value the panda accepts while controls are not allowed (LongitudinalLimits.inactive_accel)
 
 # LKA limits
 # EPS faults if you apply torque while the steering rate is above 100 deg/s for too long
@@ -258,6 +259,10 @@ class CarController(CarControllerBase):
           # whatever the rate limit, the PID or the pitch compensation would send
           if CS.out.stockAeb:
             pcm_accel_cmd = min(pcm_accel_cmd, 0.0)
+        else:
+          # LionDriver (SWF-052, TSR-208): while longitudinal control is not active, send the inactive acceleration
+          # whatever actuators.accel carries, so a defect or a stale carControl upstream cannot request braking
+          pcm_accel_cmd = INACTIVE_ACCEL
 
         main_accel_cmd = 0. if self.CP.flags & ToyotaFlags.SECOC.value else pcm_accel_cmd
         can_sends.append(toyotacan.create_accel_command(self.packer, main_accel_cmd, pcm_cancel_cmd, self.permit_braking, self.standstill_req, lead,

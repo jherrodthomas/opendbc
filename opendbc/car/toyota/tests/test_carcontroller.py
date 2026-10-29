@@ -2,7 +2,10 @@ import unittest
 
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.car_helpers import interfaces
-from opendbc.car.toyota.carcontroller import ACCEL_FINAL_RATE_LIMIT
+from opendbc.can import CANParser
+from opendbc.car import Bus
+from opendbc.car.toyota.carcontroller import ACCEL_FINAL_RATE_LIMIT, INACTIVE_ACCEL
+from opendbc.car.toyota.values import DBC
 from opendbc.car.toyota.values import CAR
 
 # LionDriver WP-W-02 OI-15 and TSR-713 (DQ-300 A): the ACCEL_CMD sent to the PCM is rate limited after the PID and
@@ -22,13 +25,13 @@ class TestToyotaAccelCommand(unittest.TestCase):
     self.CS = self.CI.CS
     self.CS.out = structs.CarState(vEgo=25., aEgo=0.)
 
-  def run_controller(self, accel, steps, pitch=0., aeb=lambda f: False, a_ego=0.):
+  def run_controller(self, accel, steps, pitch=0., aeb=lambda f: False, a_ego=0., long_active=lambda f: True):
     """Steps the controller at 100 Hz and returns (step, ACCEL_CMD) for each 0x343 frame (every third step)."""
     sent = []
     for frame in range(steps):
       self.CS.out.aEgo = a_ego
       self.CS.out.stockAeb = aeb(frame)
-      CC = structs.CarControl.new_message(enabled=True, longActive=True,
+      CC = structs.CarControl.new_message(enabled=True, longActive=long_active(frame),
                                           orientationNED=[0., pitch(frame) if callable(pitch) else pitch, 0.])
       CC.actuators.accel = accel(frame) if callable(accel) else accel
       CC.actuators.longControlState = LongCtrlState.pid
@@ -73,6 +76,32 @@ class TestToyotaAccelCommand(unittest.TestCase):
     self.assertLessEqual(after[0][1], 0.)
     self.assert_rate_bounded(after, ACCEL_FINAL_RATE_LIMIT)
     self.assertGreater(sent[-1][1], 0.)
+
+  # LionDriver SWF-052 (TSR-208): while longitudinal control is not active the command is the inactive value, whatever
+  # actuators.accel carries
+  def test_inactive_value_when_not_active(self):
+    for accel in (-3.5, -0.5, 1.5):
+      sent = self.run_controller(accel, 300, long_active=lambda f: False)
+      self.assertTrue(all(a == INACTIVE_ACCEL for _, a in sent), accel)
+
+  def test_inactive_value_reaches_the_frame(self):
+    sends = []
+    for frame in range(30):
+      CC = structs.CarControl.new_message(enabled=True, longActive=False)
+      CC.actuators.accel = -2.0
+      _, can_sends = self.CI.apply(CC.as_reader(), frame * int(DT_CTRL * 1e9))
+      sends += [c for c in can_sends if c[0] == 0x343]
+    self.assertTrue(sends)
+    parser = CANParser(DBC[REFERENCE][Bus.pt], [("ACC_CONTROL", 0)], 0)
+    for addr, dat, bus in sends:
+      parser.update([(0, [(addr, dat, bus)])])
+      self.assertEqual(parser.vl["ACC_CONTROL"]["ACCEL_CMD"], INACTIVE_ACCEL)
+
+  def test_active_again_from_the_inactive_value(self):
+    # inactive until step 300, then active with a steady request: the command leaves 0 at no more than the rate limit
+    sent = self.run_controller(1.5, 600, long_active=lambda f: f >= 300)
+    self.assertTrue(all(a == INACTIVE_ACCEL for f, a in sent if f < 300))
+    self.assert_rate_bounded([(f, a) for f, a in sent if f >= 297], ACCEL_FINAL_RATE_LIMIT)
 
 
 if __name__ == "__main__":
